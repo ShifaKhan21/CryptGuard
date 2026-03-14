@@ -78,6 +78,12 @@ enum class AppType {
     ZOOM,
     DISCORD,
     GITHUB,
+    LINKEDIN,
+    REDDIT,
+    WIKIPEDIA,
+    SLACK,
+    TEAMS,
+    DROPBOX,
     CLOUDFLARE,
     // Add more as needed
     APP_COUNT  // Keep this last for counting

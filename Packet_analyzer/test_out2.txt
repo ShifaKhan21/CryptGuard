@@ -1,0 +1,40 @@
+
+╔══════════════════════════════════════════════════════════════╗
+║              DPI ENGINE v2.0 (Multi-threaded)                 ║
+╠══════════════════════════════════════════════════════════════╣
+║ Load Balancers:  2    FPs per LB:  2    Total FPs:  4     ║
+╚══════════════════════════════════════════════════════════════╝
+
+Opened PCAP file: wifi_test2.pcap
+  Version: 2.4
+  Snaplen: 262144 bytes
+  Link type: 1 (Ethernet)
+[Reader] Processing packets...
+[Reader] Done reading 427 packets
+
+╔══════════════════════════════════════════════════════════════╗
+║                      PROCESSING REPORT                        ║
+╠══════════════════════════════════════════════════════════════╣
+║ Total Packets:               427                           ║
+║ Total Bytes:              702303                           ║
+║ TCP Packets:                 427                           ║
+║ UDP Packets:                   0                           ║
+╠══════════════════════════════════════════════════════════════╣
+║ Forwarded:                   427                           ║
+║ Dropped:                       0                           ║
+╠══════════════════════════════════════════════════════════════╣
+║ THREAD STATISTICS                                             ║
+║   LB0 dispatched:              1                           ║
+║   LB1 dispatched:            426                           ║
+║   FP0 processed:               1                           ║
+║   FP1 processed:               0                           ║
+║   FP2 processed:               0                           ║
+║   FP3 processed:             426                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                   APPLICATION BREAKDOWN                       ║
+╠══════════════════════════════════════════════════════════════╣
+║ Unknown             277  64.9% ############          ║
+║ HTTPS               150  35.1% #######               ║
+╚══════════════════════════════════════════════════════════════╝
+
+Output written to: out_wifi.pcap

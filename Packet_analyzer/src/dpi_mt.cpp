@@ -175,6 +175,7 @@ struct Stats {
     std::mutex app_mutex;
     std::unordered_map<AppType, uint64_t> app_counts;
     std::unordered_map<std::string, AppType> detected_snis;
+    std::unordered_set<uint32_t> active_ips;
     
     void recordApp(AppType app, const std::string& sni) {
         std::lock_guard<std::mutex> lock(app_mutex);
@@ -182,6 +183,11 @@ struct Stats {
         if (!sni.empty()) {
             detected_snis[sni] = app;
         }
+    }
+
+    void recordActiveIP(uint32_t ip) {
+        std::lock_guard<std::mutex> lock(app_mutex);
+        active_ips.insert(ip);
     }
 };
 
@@ -248,6 +254,9 @@ private:
             
             // Record stats
             stats_->recordApp(flow.app_type, flow.sni);
+            if (flow.sni.empty() && (flow.app_type == AppType::HTTPS || flow.app_type == AppType::QUIC || flow.app_type == AppType::UNKNOWN)) {
+                stats_->recordActiveIP(pkt.tuple.dst_ip);
+            }
             
             // Forward or drop
             if (flow.blocked) {
@@ -260,10 +269,22 @@ private:
     }
     
     void classifyFlow(Packet& pkt, FlowEntry& flow) {
-        // Try SNI extraction for HTTPS
-        if (pkt.tuple.dst_port == 443 && pkt.payload_length > 5) {
+        // Try SNI extraction for HTTPS (TCP/TLS)
+        if (pkt.tuple.protocol == Protocol::TCP && pkt.tuple.dst_port == 443 && pkt.payload_length > 5) {
             const uint8_t* payload = pkt.data.data() + pkt.payload_offset;
             auto sni = SNIExtractor::extract(payload, pkt.payload_length);
+            if (sni) {
+                flow.sni = *sni;
+                flow.app_type = sniToAppType(*sni);
+                flow.classified = true;
+                return;
+            }
+        }
+        
+        // Try QUIC SNI extraction (UDP 443)
+        if (pkt.tuple.protocol == Protocol::UDP && pkt.tuple.dst_port == 443 && pkt.payload_length > 5) {
+            const uint8_t* payload = pkt.data.data() + pkt.payload_offset;
+            auto sni = QUICSNIExtractor::extract(payload, pkt.payload_length);
             if (sni) {
                 flow.sni = *sni;
                 flow.app_type = sniToAppType(*sni);
@@ -579,6 +600,19 @@ private:
             std::cout << "\n[Detected Domains/SNIs]\n";
             for (const auto& [sni, app] : stats_.detected_snis) {
                 std::cout << "  - " << sni << " -> " << appTypeToString(app) << "\n";
+            }
+        }
+
+        // Active IPs (for Reverse DNS)
+        if (!stats_.active_ips.empty()) {
+            std::cout << "\n[Active Destination IPs]\n";
+            for (uint32_t ip : stats_.active_ips) {
+                // Use a simple local IP string converter
+                std::string ip_str = std::to_string(ip & 0xFF) + "." + 
+                                   std::to_string((ip >> 8) & 0xFF) + "." + 
+                                   std::to_string((ip >> 16) & 0xFF) + "." + 
+                                   std::to_string((ip >> 24) & 0xFF);
+                std::cout << "  - IP: " << ip_str << "\n";
             }
         }
     }

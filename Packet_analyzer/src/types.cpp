@@ -51,6 +51,12 @@ std::string appTypeToString(AppType type) {
         case AppType::ZOOM:       return "Zoom";
         case AppType::DISCORD:    return "Discord";
         case AppType::GITHUB:     return "GitHub";
+        case AppType::LINKEDIN:   return "LinkedIn";
+        case AppType::REDDIT:     return "Reddit";
+        case AppType::WIKIPEDIA:  return "Wikipedia";
+        case AppType::SLACK:      return "Slack";
+        case AppType::TEAMS:      return "MS Teams";
+        case AppType::DROPBOX:    return "Dropbox";
         case AppType::CLOUDFLARE: return "Cloudflare";
         default:                  return "Unknown";
     }
@@ -65,22 +71,23 @@ AppType sniToAppType(const std::string& sni) {
     std::transform(lower_sni.begin(), lower_sni.end(), lower_sni.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     
-    // Check for known patterns
-    // Google (including YouTube, which is owned by Google)
-    if (lower_sni.find("google") != std::string::npos ||
-        lower_sni.find("gstatic") != std::string::npos ||
-        lower_sni.find("googleapis") != std::string::npos ||
-        lower_sni.find("ggpht") != std::string::npos ||
-        lower_sni.find("gvt1") != std::string::npos) {
-        return AppType::GOOGLE;
-    }
-    
-    // YouTube
+    // YouTube (Check before Google because YouTube uses Google infra)
     if (lower_sni.find("youtube") != std::string::npos ||
         lower_sni.find("ytimg") != std::string::npos ||
         lower_sni.find("youtu.be") != std::string::npos ||
+        lower_sni.find("googlevideo.com") != std::string::npos ||
         lower_sni.find("yt3.ggpht") != std::string::npos) {
         return AppType::YOUTUBE;
+    }
+    
+    // Google
+    if (lower_sni.find("google") != std::string::npos ||
+        lower_sni.find("gstatic") != std::string::npos ||
+        lower_sni.find("googleapis") != std::string::npos ||
+        lower_sni.find("1e100.net") != std::string::npos ||
+        lower_sni.find("ggpht") != std::string::npos ||
+        lower_sni.find("gvt1") != std::string::npos) {
+        return AppType::GOOGLE;
     }
     
     // Facebook/Meta
@@ -181,6 +188,40 @@ AppType sniToAppType(const std::string& sni) {
     if (lower_sni.find("github") != std::string::npos ||
         lower_sni.find("githubusercontent") != std::string::npos) {
         return AppType::GITHUB;
+    }
+    
+    // LinkedIn
+    if (lower_sni.find("linkedin") != std::string::npos ||
+        lower_sni.find("licdn") != std::string::npos) {
+        return AppType::LINKEDIN;
+    }
+    
+    // Reddit
+    if (lower_sni.find("reddit") != std::string::npos ||
+        lower_sni.find("redditmedia") != std::string::npos) {
+        return AppType::REDDIT;
+    }
+    
+    // Wikipedia
+    if (lower_sni.find("wikipedia") != std::string::npos ||
+        lower_sni.find("wikimedia") != std::string::npos) {
+        return AppType::WIKIPEDIA;
+    }
+    
+    // Slack
+    if (lower_sni.find("slack") != std::string::npos) {
+        return AppType::SLACK;
+    }
+    
+    // Microsoft Teams
+    if (lower_sni.find("teams.microsoft.com") != std::string::npos ||
+        lower_sni.find("teams.live.com") != std::string::npos) {
+        return AppType::TEAMS;
+    }
+    
+    // Dropbox
+    if (lower_sni.find("dropbox") != std::string::npos) {
+        return AppType::DROPBOX;
     }
     
     // Cloudflare

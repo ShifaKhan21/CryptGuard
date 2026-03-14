@@ -1,0 +1,76 @@
+
+╔══════════════════════════════════════════════════════════════╗
+║              DPI ENGINE v2.0 (Multi-threaded)                 ║
+╠══════════════════════════════════════════════════════════════╣
+║ Load Balancers:  2    FPs per LB:  2    Total FPs:  4     ║
+╚══════════════════════════════════════════════════════════════╝
+
+Opened PCAP file: test_dpi.pcap
+  Version: 2.4
+  Snaplen: 65535 bytes
+  Link type: 1 (Ethernet)
+[Reader] Processing packets...
+[Reader] Done reading 77 packets
+
+╔══════════════════════════════════════════════════════════════╗
+║                      PROCESSING REPORT                        ║
+╠══════════════════════════════════════════════════════════════╣
+║ Total Packets:                77                           ║
+║ Total Bytes:                5738                           ║
+║ TCP Packets:                  73                           ║
+║ UDP Packets:                   4                           ║
+╠══════════════════════════════════════════════════════════════╣
+║ Forwarded:                    77                           ║
+║ Dropped:                       0                           ║
+╠══════════════════════════════════════════════════════════════╣
+║ THREAD STATISTICS                                             ║
+║   LB0 dispatched:             53                           ║
+║   LB1 dispatched:             24                           ║
+║   FP0 processed:              53                           ║
+║   FP1 processed:               0                           ║
+║   FP2 processed:               0                           ║
+║   FP3 processed:              24                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                   APPLICATION BREAKDOWN                       ║
+╠══════════════════════════════════════════════════════════════╣
+║ HTTPS                39  50.6% ##########            ║
+║ Unknown              16  20.8% ####                  ║
+║ DNS                   4   5.2% #                     ║
+║ Twitter/X             3   3.9%                       ║
+║ HTTP                  2   2.6%                       ║
+║ TikTok                1   1.3%                       ║
+║ Telegram              1   1.3%                       ║
+║ Amazon                1   1.3%                       ║
+║ Instagram             1   1.3%                       ║
+║ Discord               1   1.3%                       ║
+║ Facebook              1   1.3%                       ║
+║ YouTube               1   1.3%                       ║
+║ GitHub                1   1.3%                       ║
+║ Zoom                  1   1.3%                       ║
+║ Google                1   1.3%                       ║
+║ Spotify               1   1.3%                       ║
+║ Cloudflare            1   1.3%                       ║
+║ Apple                 1   1.3%                       ║
+╚══════════════════════════════════════════════════════════════╝
+
+[Detected Domains/SNIs]
+  - httpbin.org -> HTTPS
+  - www.microsoft.com -> Twitter/X
+  - github.com -> GitHub
+  - www.facebook.com -> Facebook
+  - zoom.us -> Zoom
+  - www.youtube.com -> YouTube
+  - www.instagram.com -> Instagram
+  - discord.com -> Discord
+  - web.telegram.org -> Telegram
+  - www.apple.com -> Apple
+  - twitter.com -> Twitter/X
+  - example.com -> HTTPS
+  - open.spotify.com -> Spotify
+  - www.google.com -> Google
+  - www.amazon.com -> Amazon
+  - www.cloudflare.com -> Cloudflare
+  - www.netflix.com -> Twitter/X
+  - www.tiktok.com -> TikTok
+
+Output written to: out_test.pcap

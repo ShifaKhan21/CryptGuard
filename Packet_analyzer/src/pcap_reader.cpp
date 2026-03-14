@@ -5,8 +5,10 @@
 namespace PacketAnalyzer {
 
 // Magic numbers for PCAP files
-constexpr uint32_t PCAP_MAGIC_NATIVE = 0xa1b2c3d4;  // Native byte order
-constexpr uint32_t PCAP_MAGIC_SWAPPED = 0xd4c3b2a1; // Swapped byte order
+constexpr uint32_t PCAP_MAGIC_NATIVE = 0xa1b2c3d4;  // Native byte order (microsec)
+constexpr uint32_t PCAP_MAGIC_SWAPPED = 0xd4c3b2a1; // Swapped byte order (microsec)
+constexpr uint32_t PCAP_MAGIC_NSEC_NATIVE = 0xa1b23c4d; // Native byte order (nanosec)
+constexpr uint32_t PCAP_MAGIC_NSEC_SWAPPED = 0x4d3cb2a1; // Swapped byte order (nanosec)
 
 PcapReader::~PcapReader() {
     close();
@@ -32,9 +34,11 @@ bool PcapReader::open(const std::string& filename) {
     }
     
     // Check the magic number to determine byte order
-    if (global_header_.magic_number == PCAP_MAGIC_NATIVE) {
+    if (global_header_.magic_number == PCAP_MAGIC_NATIVE || 
+        global_header_.magic_number == PCAP_MAGIC_NSEC_NATIVE) {
         needs_byte_swap_ = false;
-    } else if (global_header_.magic_number == PCAP_MAGIC_SWAPPED) {
+    } else if (global_header_.magic_number == PCAP_MAGIC_SWAPPED ||
+               global_header_.magic_number == PCAP_MAGIC_NSEC_SWAPPED) {
         needs_byte_swap_ = true;
         // Swap the header fields we've already read
         global_header_.version_major = maybeSwap16(global_header_.version_major);
