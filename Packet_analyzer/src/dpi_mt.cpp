@@ -183,6 +183,39 @@ struct Stats {
             detected_snis[sni] = app;
         }
     }
+
+    void saveJson(const std::string& filename) {
+        std::lock_guard<std::mutex> lock(app_mutex);
+        std::ofstream out(filename);
+        if (!out.is_open()) return;
+
+        out << "{\n";
+        out << "  \"total_packets\": " << total_packets.load() << ",\n";
+        out << "  \"total_bytes\": " << total_bytes.load() << ",\n";
+        out << "  \"forwarded\": " << forwarded.load() << ",\n";
+        out << "  \"dropped\": " << dropped.load() << ",\n";
+        out << "  \"tcp_packets\": " << tcp_packets.load() << ",\n";
+        out << "  \"udp_packets\": " << udp_packets.load() << ",\n";
+        
+        out << "  \"applications\": [\n";
+        bool first = true;
+        for (const auto& [app, count] : app_counts) {
+            if (!first) out << ",\n";
+            out << "    { \"name\": \"" << appTypeToString(app) << "\", \"count\": " << count << " }";
+            first = false;
+        }
+        out << "\n  ],\n";
+
+        out << "  \"snis\": [\n";
+        first = true;
+        for (const auto& [sni, app] : detected_snis) {
+            if (!first) out << ",\n";
+            out << "    { \"domain\": \"" << sni << "\", \"app\": \"" << appTypeToString(app) << "\" }";
+            first = false;
+        }
+        out << "\n  ]\n";
+        out << "}\n";
+    }
 };
 
 // =============================================================================
@@ -389,6 +422,7 @@ public:
     void blockIP(const std::string& ip) { rules_.blockIP(ip); }
     void blockApp(const std::string& app) { rules_.blockApp(app); }
     void blockDomain(const std::string& dom) { rules_.blockDomain(dom); }
+    void saveJson(const std::string& filename) { stats_.saveJson(filename); }
     
     bool process(const std::string& input_file, const std::string& output_file) {
         // Open input
@@ -600,6 +634,7 @@ Options:
   --block-domain <dom>   Block domain (substring match)
   --lbs <n>              Number of load balancer threads (default: 2)
   --fps <n>              FP threads per LB (default: 2)
+  --json <file>          Save processing report as JSON
 
 Example:
   )" << prog << R"( capture.pcap filtered.pcap --block-app YouTube --block-ip 192.168.1.50
@@ -617,6 +652,7 @@ int main(int argc, char* argv[]) {
     
     DPIEngine::Config cfg;
     std::vector<std::string> block_ips, block_apps, block_domains;
+    std::string json_file;
     
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];
@@ -625,6 +661,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--block-domain" && i + 1 < argc) block_domains.push_back(argv[++i]);
         else if (arg == "--lbs" && i + 1 < argc) cfg.num_lbs = std::stoi(argv[++i]);
         else if (arg == "--fps" && i + 1 < argc) cfg.fps_per_lb = std::stoi(argv[++i]);
+        else if (arg == "--json" && i + 1 < argc) json_file = argv[++i];
     }
     
     DPIEngine engine(cfg);
@@ -635,6 +672,10 @@ int main(int argc, char* argv[]) {
     
     if (!engine.process(input, output)) {
         return 1;
+    }
+
+    if (!json_file.empty()) {
+        engine.saveJson(json_file);
     }
     
     std::cout << "\nOutput written to: " << output << "\n";
