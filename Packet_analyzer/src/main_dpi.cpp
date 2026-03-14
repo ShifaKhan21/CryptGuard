@@ -90,6 +90,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> block_apps;
     std::vector<std::string> block_domains;
     std::string rules_file;
+    std::string json_file;
     
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];
@@ -102,6 +103,8 @@ int main(int argc, char* argv[]) {
             block_domains.push_back(argv[++i]);
         } else if (arg == "--rules" && i + 1 < argc) {
             rules_file = argv[++i];
+        } else if (arg == "--json" && i + 1 < argc) {
+            json_file = argv[++i];
         } else if (arg == "--lbs" && i + 1 < argc) {
             config.num_load_balancers = std::stoi(argv[++i]);
         } else if (arg == "--fps" && i + 1 < argc) {
@@ -145,6 +148,10 @@ int main(int argc, char* argv[]) {
     if (!engine.processFile(input_file, output_file)) {
         std::cerr << "Failed to process file\n";
         return 1;
+    }
+
+    if (!json_file.empty()) {
+        engine.saveJsonReport(json_file);
     }
     
     std::cout << "\nProcessing complete!\n";

@@ -276,7 +276,7 @@ PacketJob DPIEngine::createPacketJob(const PacketAnalyzer::RawPacket& raw,
         
         if (job.payload_offset < job.data.size()) {
             job.payload_length = job.data.size() - job.payload_offset;
-            job.payload_data = job.data.data() + job.payload_offset;
+            // job.payload_data = job.data.data() + job.payload_offset; // REMOVED: Dangling pointer
         }
     }
     
@@ -482,6 +482,53 @@ void DPIEngine::printStatus() const {
         auto fp_stats = fp_manager_->getAggregatedStats();
         std::cout << "Connections: " << fp_stats.total_connections << "\n";
     }
+}
+
+void DPIEngine::saveJsonReport(const std::string& filename) {
+    std::ofstream out(filename);
+    if (!out.is_open()) return;
+
+    out << "{\n";
+    out << "  \"total_packets\": " << stats_.total_packets.load() << ",\n";
+    out << "  \"total_bytes\": " << stats_.total_bytes.load() << ",\n";
+    out << "  \"forwarded\": " << stats_.forwarded_packets.load() << ",\n";
+    out << "  \"dropped\": " << stats_.dropped_packets.load() << ",\n";
+    out << "  \"tcp_packets\": " << stats_.tcp_packets.load() << ",\n";
+    out << "  \"udp_packets\": " << stats_.udp_packets.load() << ",\n";
+    
+    // Aggregate application breakdown
+    std::unordered_map<AppType, size_t> app_counts;
+    std::unordered_map<std::string, AppType> detected_snis;
+    
+    if (fp_manager_) {
+        for (int i = 0; i < fp_manager_->getNumFPs(); i++) {
+            fp_manager_->getFP(i).getConnectionTracker().forEach([&](const Connection& conn) {
+                app_counts[conn.app_type]++;
+                if (!conn.sni.empty()) {
+                    detected_snis[conn.sni] = conn.app_type;
+                }
+            });
+        }
+    }
+
+    out << "  \"applications\": [\n";
+    bool first = true;
+    for (const auto& [app, count] : app_counts) {
+        if (!first) out << ",\n";
+        out << "    { \"name\": \"" << appTypeToString(app) << "\", \"count\": " << count << " }";
+        first = false;
+    }
+    out << "\n  ],\n";
+
+    out << "  \"snis\": [\n";
+    first = true;
+    for (const auto& [sni, app] : detected_snis) {
+        if (!first) out << ",\n";
+        out << "    { \"domain\": \"" << sni << "\", \"app\": \"" << appTypeToString(app) << "\" }";
+        first = false;
+    }
+    out << "\n  ]\n";
+    out << "}\n";
 }
 
 } // namespace DPI

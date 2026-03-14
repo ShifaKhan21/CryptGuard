@@ -110,6 +110,9 @@ public:
     // Save rules to file
     bool saveRules(const std::string& filename);
     
+    // Save report as JSON
+    void saveJsonReport(const std::string& filename);
+    
     // ========== Reporting ==========
     
     // Generate full statistics report

@@ -145,7 +145,6 @@ struct PacketJob {
     size_t payload_offset = 0;
     size_t payload_length = 0;
     uint8_t tcp_flags = 0;
-    const uint8_t* payload_data = nullptr;
     
     // Timestamps
     uint32_t ts_sec;
