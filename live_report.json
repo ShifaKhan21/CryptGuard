@@ -1,32 +1,32 @@
 {
   "total_packets": 70,
-  "total_bytes": 8079,
+  "total_bytes": 8093,
   "forwarded": 70,
   "dropped": 0,
   "tcp_packets": 70,
   "udp_packets": 0,
   "applications": [
     { "name": "HTTP", "count": 10 },
-    { "name": "Spotify", "count": 4 },
-    { "name": "Google", "count": 10 },
-    { "name": "Facebook", "count": 11 },
-    { "name": "Netflix", "count": 9 },
-    { "name": "Discord", "count": 7 },
-    { "name": "Zoom", "count": 8 },
-    { "name": "Twitter", "count": 1 },
-    { "name": "Instagram", "count": 5 },
-    { "name": "GitHub", "count": 5 }
+    { "name": "Facebook", "count": 5 },
+    { "name": "Spotify", "count": 8 },
+    { "name": "Twitter", "count": 8 },
+    { "name": "GitHub", "count": 4 },
+    { "name": "Instagram", "count": 7 },
+    { "name": "Zoom", "count": 3 },
+    { "name": "Google", "count": 15 },
+    { "name": "Netflix", "count": 6 },
+    { "name": "Discord", "count": 4 }
   ],
   "snis": [
+    { "domain": "facebook.com", "app": "Facebook" },
+    { "domain": "twitter.com", "app": "Twitter" },
     { "domain": "google.com", "app": "Google" },
     { "domain": "spotify.com", "app": "Spotify" },
-    { "domain": "twitter.com", "app": "Twitter" },
-    { "domain": "facebook.com", "app": "Facebook" },
     { "domain": "netflix.com", "app": "Netflix" },
-    { "domain": "discord.com", "app": "Discord" },
+    { "domain": "github.com", "app": "GitHub" },
     { "domain": "instagram.com", "app": "Instagram" },
-    { "domain": "youtube.com", "app": "Google" },
     { "domain": "zoom.us", "app": "Zoom" },
-    { "domain": "github.com", "app": "GitHub" }
+    { "domain": "youtube.com", "app": "Google" },
+    { "domain": "discord.com", "app": "Discord" }
   ]
 }
