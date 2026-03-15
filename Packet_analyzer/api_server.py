@@ -130,13 +130,30 @@ def run_dpi_capture_loop():
 
         # 2. Run C++ DPI engine
         try:
-            cwd = os.getcwd().replace('\\', '/')
+            # Convert Windows path to MSYS2 format safely
+            abs_cwd = os.path.abspath(os.getcwd())
+            msys_cwd = abs_cwd.replace('\\', '/')
+            if ':' in msys_cwd:
+                drive, rest = msys_cwd.split(':', 1)
+                msys_cwd = f"/{drive.lower()}{rest}"
+            
             dpi_cmd = [
                 r"C:\msys64\usr\bin\bash.exe", "-lc",
-                f"cd '{cwd}' && export PATH=/mingw64/bin:$PATH && ./{DPI_ENGINE_PATH} {TEMP_PCAP} {TEMP_OUT}"
+                f"cd '{msys_cwd}' && export PATH=/mingw64/bin:$PATH && ./{DPI_ENGINE_PATH} {TEMP_PCAP} {TEMP_OUT}"
             ]
             result = subprocess.run(dpi_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
             dpi_output = result.stdout
+            dpi_stderr = result.stderr
+            
+            # FORCE LOGGING to a dedicated file for this run
+            with open("capture_trace.log", "a", encoding="utf-8") as f:
+                f.write(f"\n--- {time.ctime()} ---\n")
+                f.write(f"DPI CMD: {' '.join(dpi_cmd)}\n")
+                f.write(f"DPI EXIT CODE: {result.returncode}\n")
+                if dpi_stderr:
+                    f.write(f"DPI STDERR: {dpi_stderr[:500]}\n")
+                f.write(f"DPI OUTPUT (first 500 chars): {dpi_output[:500]}\n")
+                f.write(f"DPI OUTPUT LENGTH: {len(dpi_output)}\n")
             
             # 3. Parse and aggregate output
             now = time.time()
@@ -157,20 +174,26 @@ def run_dpi_capture_loop():
                     line = line.strip()
                     if not line: continue
 
-                    if line.startswith("║ Total Packets:"):
-                         parts = line.split()
-                         if len(parts) >= 4:
-                             try: total_packets += int(parts[3])
+                    if "Total Packets:" in line:
+                         parts = line.strip("║").strip().split(":")
+                         if len(parts) >= 2:
+                             try:
+                                 val = "".join(filter(str.isdigit, parts[1]))
+                                 total_packets += int(val)
                              except: pass
-                    elif line.startswith("║ Forwarded:"):
-                         parts = line.split()
-                         if len(parts) >= 3:
-                             try: forwarded_packets += int(parts[2])
+                    elif "Forwarded:" in line:
+                         parts = line.strip("║").strip().split(":")
+                         if len(parts) >= 2:
+                             try:
+                                 val = "".join(filter(str.isdigit, parts[1]))
+                                 forwarded_packets += int(val)
                              except: pass
-                    elif line.startswith("║ Dropped:"):
-                         parts = line.split()
-                         if len(parts) >= 3:
-                             try: dropped_packets += int(parts[2])
+                    elif "Dropped:" in line:
+                         parts = line.strip("║").strip().split(":")
+                         if len(parts) >= 2:
+                             try:
+                                 val = "".join(filter(str.isdigit, parts[1]))
+                                 dropped_packets += int(val)
                              except: pass
                              
                     # Section detection
@@ -197,11 +220,11 @@ def run_dpi_capture_loop():
 
                     # Parse data lines
                     if sni_section:
-                        if line.startswith("- "):
-                            parts = line[2:].split(" -> ")
+                        if " -> " in line:
+                            parts = line.strip("║").strip("- ").split(" -> ")
                             if len(parts) >= 2:
-                                domain = parts[0]
-                                category = parts[1]
+                                domain = parts[0].strip()
+                                category = parts[1].strip()
                                 
                                 # Filter local hostname
                                 if domain.lower() == LOCAL_HOSTNAME.lower():
@@ -210,14 +233,33 @@ def run_dpi_capture_loop():
                                 if domain not in domains:
                                     domains[domain] = {"count": 0, "category": category, "last_seen": now}
                                 
-                                if domain in domains:
-                                    domains[domain]["count"] += 1
-                                    domains[domain]["last_seen"] = now
-                        elif not line.startswith("║"):
+                                domains[domain]["count"] += 1
+                                domains[domain]["last_seen"] = now
+                        elif not line.startswith("║") and "[" in line:
                             sni_section = False
 
                     if active_ip_section:
-                        if not line.startswith("║") and "[" in line:
+                        if "IP:" in line:
+                            parts = line.split("IP:")
+                            if len(parts) > 1:
+                                ip = parts[1].split()[0].strip("║() ")
+                                if ip:
+                                    # Add to DNS queue for resolution
+                                    with dns_lock:
+                                        if ip not in dns_cache and ip not in dns_queue:
+                                            dns_queue.append(ip)
+                                    
+                                    # Check resolving cache
+                                    resolved = dns_cache.get(ip)
+                                    domain_key = resolved if resolved else ip
+                                    
+                                    if domain_key not in domains:
+                                        domains[domain_key] = {"count": 0, "category": "General Traffic", "last_seen": now}
+                                    
+                                    domains[domain_key]["count"] += 1
+                                    domains[domain_key]["last_seen"] = now
+                                    
+                        elif not line.startswith("║") and "[" in line:
                             active_ip_section = False
                         continue
 
@@ -303,17 +345,27 @@ class APIHandler(BaseHTTPRequestHandler):
             
         elif self.path == '/api/stats':
             with state_lock:
-                # Sort by last_seen (most recent first), then by hits
-                sorted_domains = [
-                    {
-                        "domain": k, 
+                # Resolve names for display
+                sorted_domains = []
+                for k, v in engine_state["domains"].items():
+                    display_name = k
+                    # If key is an IP, check if we have a cached name
+                    if any(c.isdigit() for c in k) and '.' in k: # Simple IP check
+                         resolved = dns_cache.get(k)
+                         if resolved:
+                             display_name = resolved
+                    
+                    sorted_domains.append({
+                        "domain": display_name, 
                         "category": v["category"], 
                         "hits": v["count"], 
                         "last_seen": v.get("last_seen", 0),
                         "ml_features": v.get("ml_features", {})
-                    }
-                    for k, v in sorted(engine_state["domains"].items(), key=lambda item: (item[1].get("last_seen", 0), item[1]["count"]), reverse=True)
-                ][:50]
+                    })
+                
+                # Sort by last_seen (most recent first), then by hits
+                sorted_domains.sort(key=lambda x: (x.get("last_seen", 0), x["hits"]), reverse=True)
+                sorted_domains = sorted_domains[:50]
                 
                 response = {
                     "domains": sorted_domains,
