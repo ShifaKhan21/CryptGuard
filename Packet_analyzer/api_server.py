@@ -8,6 +8,7 @@ import platform
 import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from concurrent.futures import ThreadPoolExecutor
 
 # Constants
 TSHARK_PATH = r"C:\Program Files\Wireshark\tshark.exe" if platform.system() == "Windows" else "tshark"
@@ -18,6 +19,17 @@ CAPTURE_DURATION = 2  # Reduced for faster updates
 
 # Global State
 LOCAL_HOSTNAME = socket.gethostname()
+
+def debug_log(message):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {message}"
+    print(log_line)
+    try:
+        with open("debug.log", "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except:
+        pass
+
 engine_state = {
     "interfaces": [],
     "selected_interface": None,
@@ -34,35 +46,135 @@ dns_cache = {}
 dns_queue = []
 dns_lock = threading.Lock()
 
+def get_friendly_name(ip):
+    """Returns a friendly name for common network addresses or internal IPs"""
+    try:
+        # Exact matches
+        exact_matches = {
+            "255.255.255.255": "Broadcast",
+            "0.0.0.0": "Any Interface",
+            "1.1.1.1": "Cloudflare DNS",
+            "8.8.8.8": "Google DNS",
+            "8.8.4.4": "Google DNS",
+        }
+        if ip in exact_matches: return exact_matches[ip]
+        
+        # Ranges and Patterns
+        if ip.startswith("224.") or ip.startswith("239."): return "Multicast/Discovery"
+        
+        # Google Services (Broad check)
+        google_prefixes = ["142.250", "142.251", "172.217", "172.253", "216.58", "216.239", "74.125"]
+        if any(ip.startswith(p) for p in google_prefixes): return "Google Service"
+        
+        # Cloudflare
+        cf_prefixes = ["104.16", "104.17", "104.18", "104.19", "104.20", "172.64", "172.67", "162.159"]
+        if any(ip.startswith(p) for p in cf_prefixes): return "Cloudflare CDN"
+
+        # AWS (Highly variable, but some common ones)
+        aws_prefixes = ["52.216", "52.217", "54.231", "54.239", "3.5", "18.160", "13.224"]
+        if any(ip.startswith(p) for p in aws_prefixes): return "AWS Service"
+
+        # Private ranges
+        parts = list(map(int, ip.split('.')))
+        if parts[0] == 10: return "Internal Network (10.x)"
+        if parts[0] == 172 and 16 <= parts[1] <= 31: return "Internal Network (172.x)"
+        if parts[0] == 192 and parts[1] == 168: return "Local Network (192.x)"
+        
+        return None
+    except:
+        return None
+
 DECAY_TIMEOUT = 30 # Remove domains if not seen in 30 seconds
 
-def dns_resolve_worker():
-    """Background thread to resolve IPs without stalling the main loop"""
-    while True:
-        ip = None
-        with dns_lock:
-            if dns_queue:
-                ip = dns_queue.pop(0)
-        
-        if ip:
-            if ip not in dns_cache:
-                try:
-                    host = socket.gethostbyaddr(ip)[0]
-                    if host:
-                        # Clean up names
-                        if host.lower() == LOCAL_HOSTNAME.lower():
-                            dns_cache[ip] = "Local PC (" + LOCAL_HOSTNAME + ")"
-                        else:
-                            parts = host.split('.')
-                            clean_domain = '.'.join(parts[-2:]) if len(parts) >= 2 else host
-                            dns_cache[ip] = clean_domain
-                except:
-                    dns_cache[ip] = None
+def resolve_single_ip(ip):
+    """Thread function to resolve a single IP"""
+    try:
+        host = socket.gethostbyaddr(ip)[0]
+        if host:
+            if host.lower() == LOCAL_HOSTNAME.lower():
+                res = "Local PC (" + LOCAL_HOSTNAME + ")"
+            else:
+                parts = host.split('.')
+                res = '.'.join(parts[-2:]) if len(parts) >= 2 else host
+            with dns_lock:
+                dns_cache[ip] = res
+            debug_log(f"Thread Resolved {ip} -> {res}")
+    except Exception as e:
+        if isinstance(e, socket.herror) and e.errno == 11004:
+            with dns_lock:
+                dns_cache[ip] = "" # Cache negative result
         else:
-            time.sleep(0.5)
+            # Silent fail for transient errors
+            pass
 
-# Start DNS worker
-threading.Thread(target=dns_resolve_worker, daemon=True).start()
+def dns_manager_worker():
+    """Manages a pool of DNS resolution threads"""
+    debug_log("DNS Thread Manager started")
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        while True:
+            ip_to_resolve = None
+            with dns_lock:
+                if dns_queue:
+                    # Resolve in REVERSE order (most recent first)
+                    ip_to_resolve = dns_queue.pop(-1)
+            
+            if ip_to_resolve:
+                 executor.submit(resolve_single_ip, ip_to_resolve)
+            else:
+                 time.sleep(0.5)
+
+# Start DNS manager
+threading.Thread(target=dns_manager_worker, daemon=True).start()
+
+def dns_monitor_worker(interface_name):
+    """Sniffs DNS traffic in the background to build a real-time IP-to-domain map"""
+    try:
+        # Extract interface index (e.g., "5. Wi-Fi" -> "5")
+        idx = interface_name.split('.')[0]
+        debug_log(f"Starting DNS monitor on interface {idx}")
+        
+        # tshark command to sniff DNS queries and answers
+        # -f "udp port 53" captures only DNS traffic
+        # -T fields -e dns.qry.name -e dns.a extracts domain and resolved IPs
+        cmd = [
+            TSHARK_PATH, "-i", idx, 
+            "-f", "udp port 53", 
+            "-T", "fields", 
+            "-e", "dns.qry.name", 
+            "-e", "dns.a",
+            "-l" # Unbuffered line-by-line output
+        ]
+        
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        
+        for line in iter(proc.stdout.readline, ""):
+            line = line.strip()
+            if not line: continue
+            
+            parts = line.split('\t')
+            if len(parts) >= 2:
+                domain = parts[0]
+                ips = parts[1].split(',')
+                for ip in ips:
+                    ip = ip.strip()
+                    if ip and ip not in dns_cache:
+                        # Clean domain name
+                        clean_domain = domain
+                        if '.' in domain:
+                            d_parts = domain.split('.')
+                            if len(d_parts) >= 2:
+                                clean_domain = '.'.join(d_parts[-2:])
+                        
+                        with dns_lock:
+                            dns_cache[ip] = clean_domain
+                        debug_log(f"Live DNS: {ip} -> {clean_domain}")
+    except Exception as e:
+        debug_log(f"DNS Monitor Error: {str(e)}")
+
+def start_dns_monitor():
+    """Starts the DNS monitor thread if an interface is selected"""
+    if engine_state["selected_interface"]:
+        threading.Thread(target=dns_monitor_worker, args=(engine_state["selected_interface"],), daemon=True).start()
 
 
 def get_interfaces():
@@ -102,6 +214,9 @@ def run_dpi_capture_loop():
     global engine_state
     
     log_debug("DPI Capture loop started...")
+    
+    # Start real-time DNS monitoring
+    start_dns_monitor()
     
     while True:
         with state_lock:
@@ -345,27 +460,61 @@ class APIHandler(BaseHTTPRequestHandler):
             
         elif self.path == '/api/stats':
             with state_lock:
-                # Resolve names for display
-                sorted_domains = []
+                # Resolve names for display and aggregate
+                aggregated_stats = {}
                 for k, v in engine_state["domains"].items():
-                    display_name = k
-                    # If key is an IP, check if we have a cached name
-                    if any(c.isdigit() for c in k) and '.' in k: # Simple IP check
-                         resolved = dns_cache.get(k)
-                         if resolved:
-                             display_name = resolved
+                    # Standardize raw key
+                    lookup_key = k.lower().strip('.')
+                    is_ip = False
+                    try:
+                        socket.inet_aton(lookup_key)
+                        is_ip = True
+                    except:
+                        pass
                     
-                    sorted_domains.append({
-                        "domain": display_name, 
-                        "category": v["category"], 
-                        "hits": v["count"], 
-                        "last_seen": v.get("last_seen", 0),
-                        "ml_features": v.get("ml_features", {})
-                    })
+                    display_name = lookup_key
+                    if is_ip:
+                         # 1. Try Cache
+                         with dns_lock:
+                             resolved = dns_cache.get(lookup_key)
+                         
+                         if resolved and resolved != "":
+                             display_name = resolved.lower().strip('.')
+                         else:
+                             # 2. Try Friendly Names (Multicast, Broadcast, etc.)
+                             friendly = get_friendly_name(lookup_key)
+                             if friendly:
+                                 display_name = friendly
+                             else:
+                                 # 3. Queue for worker if unknown
+                                 with dns_lock:
+                                     if lookup_key not in dns_queue:
+                                         dns_queue.append(lookup_key)
+                    
+                    if display_name not in aggregated_stats:
+                        aggregated_stats[display_name] = {
+                            "domain": display_name,
+                            "category": v.get("category", "General Traffic"),
+                            "hits": 0,
+                            "last_seen": 0,
+                            "ml_features": {}
+                        }
+                    
+                    stats_ref = aggregated_stats[display_name]
+                    # Update hits and last_seen
+                    stats_ref["hits"] += v.get("count", 0)
+                    stats_ref["last_seen"] = max(stats_ref["last_seen"], v.get("last_seen", 0))
+                    
+                    # Merge ML features if available
+                    if v.get("ml_features"):
+                        stats_ref["ml_features"].update(v["ml_features"])
                 
-                # Sort by last_seen (most recent first), then by hits
-                sorted_domains.sort(key=lambda x: (x.get("last_seen", 0), x["hits"]), reverse=True)
-                sorted_domains = sorted_domains[:50]
+                # Sort by last_seen then by hits
+                sorted_domains = sorted(
+                    list(aggregated_stats.values()), 
+                    key=lambda x: (x.get("last_seen", 0), x["hits"]), 
+                    reverse=True
+                )[:50]
                 
                 response = {
                     "domains": sorted_domains,

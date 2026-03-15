@@ -217,6 +217,20 @@ struct Stats {
     std::unordered_map<std::string, AppType> detected_snis;
     std::unordered_set<uint32_t> active_ips;
     
+    // IP to Domain mapping (from DNS queries)
+    std::mutex dns_mutex;
+    std::unordered_map<uint32_t, std::string> dns_cache;
+    
+    void recordDNS(uint32_t ip, const std::string& domain) {
+        std::lock_guard<std::mutex> lock(dns_mutex);
+        dns_cache[ip] = domain;
+    }
+
+    std::string getDomainForIP(uint32_t ip) {
+        std::lock_guard<std::mutex> lock(dns_mutex);
+        return dns_cache.count(ip) ? dns_cache[ip] : "";
+    }
+    
     void recordApp(AppType app, const std::string& sni) {
         std::lock_guard<std::mutex> lock(app_mutex);
         app_counts[app]++;
@@ -266,7 +280,12 @@ public:
             uint64_t tot_pkts = flow.ml.fwd_packets + flow.ml.bwd_packets;
             uint64_t tot_bytes = flow.ml.fwd_bytes + flow.ml.bwd_bytes;
 
-            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|STATS:";
+            std::string display_name = flow.sni;
+            if (display_name.empty()) {
+                display_name = stats_->getDomainForIP(tuple.dst_ip);
+            }
+
+            std::cout << "FLOW_ID:" << (display_name.empty() ? "unknown" : display_name) << "|IP:" << tuple.dst_ip << "|STATS:";
             std::cout << "Flow Duration:" << duration << ",";
             std::cout << "Total Fwd Packets:" << flow.ml.fwd_packets << ",";
             std::cout << "Total Backward Packets:" << flow.ml.bwd_packets << ",";
@@ -480,10 +499,24 @@ private:
             }
         }
         
-        // DNS
+        // DNS extraction
         if (pkt.tuple.dst_port == 53 || pkt.tuple.src_port == 53) {
             flow.app_type = AppType::DNS;
             flow.classified = true;
+            
+            const uint8_t* payload = pkt.data.data() + pkt.payload_offset;
+            auto dns_info = DNSExtractor::extract(payload, pkt.payload_length);
+            if (dns_info && !dns_info->answers.empty()) {
+                for (const auto& ans : dns_info->answers) {
+                    if (ans.type == 1) { // Type A (IPv4)
+                        uint32_t ip = 0;
+                        if (ans.rdata.size() == 4) {
+                            ip = (ans.rdata[0] << 0) | (ans.rdata[1] << 8) | (ans.rdata[2] << 16) | (ans.rdata[3] << 24);
+                            stats_->recordDNS(ip, dns_info->query_name);
+                        }
+                    }
+                }
+            }
             return;
         }
         

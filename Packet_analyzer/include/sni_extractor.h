@@ -94,15 +94,40 @@ public:
 };
 
 // ============================================================================
+// DNS Answer/RR structure
+struct DNSAnswer {
+    uint16_t type;
+    uint16_t cls;
+    uint32_t ttl;
+    std::vector<uint8_t> rdata;
+};
+
+// DNS Query/Response info
+struct DNSInfo {
+    std::string query_name;
+    uint16_t transaction_id;
+    bool is_response;
+    std::vector<DNSAnswer> answers;
+};
+
 // DNS Query Extractor (to correlate domain names)
 // ============================================================================
 class DNSExtractor {
 public:
-    // Extract queried domain from DNS request
+    // Extract queried domain and answers from DNS packet
+    static std::optional<DNSInfo> extract(const uint8_t* payload, size_t length);
+    
+    // Extract queried domain from DNS request (legacy)
     static std::optional<std::string> extractQuery(const uint8_t* payload, size_t length);
     
     // Check if this is a DNS query (not response)
     static bool isDNSQuery(const uint8_t* payload, size_t length);
+    
+    // Check if this is any DNS packet
+    static bool isDNSPacket(const uint8_t* payload, size_t length);
+    
+private:
+    static std::string parseName(const uint8_t* payload, size_t length, size_t& offset);
 };
 
 } // namespace DPI

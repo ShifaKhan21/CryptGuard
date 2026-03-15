@@ -206,54 +206,99 @@ std::optional<std::string> HTTPHostExtractor::extract(const uint8_t* payload, si
 // DNS Extractor Implementation
 // ============================================================================
 
+bool DNSExtractor::isDNSPacket(const uint8_t* payload, size_t length) {
+    return length >= 12;
+}
+
 bool DNSExtractor::isDNSQuery(const uint8_t* payload, size_t length) {
-    // Minimum DNS header is 12 bytes
-    if (length < 12) return false;
-    
-    // Check QR bit (byte 2, bit 7) - should be 0 for query
+    if (!isDNSPacket(payload, length)) return false;
     uint8_t flags = payload[2];
-    if (flags & 0x80) return false;  // This is a response, not a query
+    return (flags & 0x80) == 0;
+}
+
+std::string DNSExtractor::parseName(const uint8_t* payload, size_t length, size_t& offset) {
+    std::string name;
+    size_t start_offset = offset;
+    bool jumped = false;
+    int jumps = 0;
+
+    while (offset < length && jumps < 10) {
+        uint8_t len = payload[offset];
+        if (len == 0) {
+            if (!jumped) offset++;
+            break;
+        }
+
+        if ((len & 0xC0) == 0xC0) { // Compression
+            if (offset + 2 > length) break;
+            uint16_t pointer = ((len & 0x3F) << 8) | payload[offset + 1];
+            if (!jumped) {
+                offset += 2;
+                jumped = true;
+            }
+            offset = pointer;
+            jumps++;
+            continue;
+        }
+
+        offset++;
+        if (offset + len > length) break;
+        if (!name.empty()) name += ".";
+        name += std::string(reinterpret_cast<const char*>(payload + offset), len);
+        offset += len;
+    }
+
+    if (jumped) {
+        // We already updated offset for the jump
+    }
     
-    // Check QDCOUNT (bytes 4-5) - should be > 0
-    uint16_t qdcount = (static_cast<uint16_t>(payload[4]) << 8) | payload[5];
-    if (qdcount == 0) return false;
-    
-    return true;
+    return name;
+}
+
+std::optional<DNSInfo> DNSExtractor::extract(const uint8_t* payload, size_t length) {
+    if (!isDNSPacket(payload, length)) return std::nullopt;
+
+    DNSInfo info;
+    info.transaction_id = (payload[0] << 8) | payload[1];
+    info.is_response = (payload[2] & 0x80) != 0;
+
+    uint16_t qdcount = (payload[4] << 8) | payload[5];
+    uint16_t ancount = (payload[6] << 8) | payload[7];
+
+    size_t offset = 12;
+
+    // Parse queries
+    for (int i = 0; i < qdcount && offset < length; i++) {
+        std::string name = parseName(payload, length, offset);
+        if (i == 0) info.query_name = name;
+        offset += 4; // Skip type and class
+    }
+
+    // Parse answers
+    for (int i = 0; i < ancount && offset < length; i++) {
+        parseName(payload, length, offset); // Skip name (usually a pointer)
+        if (offset + 10 > length) break;
+
+        DNSAnswer ans;
+        ans.type = (payload[offset] << 8) | payload[offset + 1];
+        ans.cls = (payload[offset + 2] << 8) | payload[offset + 3];
+        ans.ttl = (payload[offset + 4] << 24) | (payload[offset + 5] << 16) | (payload[offset + 6] << 8) | payload[offset + 7];
+        uint16_t rdlen = (payload[offset + 8] << 8) | payload[offset + 9];
+        offset += 10;
+
+        if (offset + rdlen > length) break;
+        ans.rdata.assign(payload + offset, payload + offset + rdlen);
+        info.answers.push_back(ans);
+        offset += rdlen;
+    }
+
+    return info;
 }
 
 std::optional<std::string> DNSExtractor::extractQuery(const uint8_t* payload, size_t length) {
-    if (!isDNSQuery(payload, length)) {
-        return std::nullopt;
-    }
-    
-    // DNS query starts at byte 12
-    size_t offset = 12;
-    std::string domain;
-    
-    while (offset < length) {
-        uint8_t label_length = payload[offset];
-        
-        if (label_length == 0) {
-            // End of domain name
-            break;
-        }
-        
-        if (label_length > 63) {
-            // Compression pointer or invalid
-            break;
-        }
-        
-        offset++;
-        if (offset + label_length > length) break;
-        
-        if (!domain.empty()) {
-            domain += '.';
-        }
-        domain += std::string(reinterpret_cast<const char*>(payload + offset), label_length);
-        offset += label_length;
-    }
-    
-    return domain.empty() ? std::nullopt : std::optional<std::string>(domain);
+    auto info = extract(payload, length);
+    if (info && !info->query_name.empty()) return info->query_name;
+    return std::nullopt;
 }
 
 // ============================================================================
