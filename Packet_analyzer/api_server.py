@@ -81,8 +81,11 @@ def get_interfaces():
 
 
 def log_debug(msg):
-    with open("debug.log", "a") as f:
-        f.write(f"{time.time()}: {msg}\n")
+    try:
+        with open("debug.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')}: {msg}\n")
+    except Exception as e:
+        print(f"Logging error: {e}")
 
 def safe_remove(file_path):
     """Safely remove a file with retries for Windows file locks"""
@@ -148,6 +151,7 @@ def run_dpi_capture_loop():
                 lines = dpi_output.split('\n')
                 sni_section = False
                 active_ip_section = False
+                ml_section = False
                 
                 for line in lines:
                     line = line.strip()
@@ -178,6 +182,17 @@ def run_dpi_capture_loop():
                     if "[Active Destination IPs]" in line:
                         sni_section = False
                         active_ip_section = True
+                        ml_section = False
+                        continue
+
+                    if "[ML_FEATURES_START]" in line:
+                        sni_section = False
+                        active_ip_section = False
+                        ml_section = True
+                        continue
+                        
+                    if "[ML_FEATURES_END]" in line:
+                        ml_section = False
                         continue
 
                     # Parse data lines
@@ -202,25 +217,32 @@ def run_dpi_capture_loop():
                             sni_section = False
 
                     if active_ip_section:
-                        if line.startswith("- IP: "):
-                            ip_addr = line[6:].strip()
-                            
-                            # Check cache or queue for resolution
-                            if ip_addr in dns_cache:
-                                resolved = dns_cache[ip_addr]
-                                if resolved:
-                                    if resolved not in domains:
-                                        domains[resolved] = {"count": 0, "category": "Active Connection", "last_seen": now}
-                                    
-                                    if resolved in domains:
-                                        domains[resolved]["count"] += 1
-                                        domains[resolved]["last_seen"] = now
-                            else:
-                                with dns_lock:
-                                    if ip_addr not in dns_queue:
-                                        dns_queue.append(ip_addr)
-                        elif not line.startswith("║"):
+                        if not line.startswith("║") and "[" in line:
                             active_ip_section = False
+                        continue
+
+                    if ml_section:
+                        if line.startswith("FLOW_ID:"):
+                            # Format: FLOW_ID:domain|IP:123|STATS:Key:Val,Key:Val...
+                            try:
+                                main_parts = line.split("|")
+                                domain = main_parts[0].split(":")[1]
+                                if not domain: continue # Only track SNI/Known domains for now
+                                
+                                stats_str = main_parts[2].split(":", 1)[1]
+                                stats_dict = {}
+                                for pair in stats_str.split(","):
+                                    if ":" in pair:
+                                        k, v = pair.split(":")
+                                        try:
+                                            stats_dict[k] = float(v)
+                                        except:
+                                            stats_dict[k] = v
+                                    
+                                if domain in domains:
+                                    domains[domain]["ml_features"] = stats_dict
+                            except Exception as e:
+                                log_debug(f"ML Parse Error: {e} on line: {line}")
 
                 # Update state back from local vars
                 engine_state["total_packets"] = total_packets
@@ -283,7 +305,13 @@ class APIHandler(BaseHTTPRequestHandler):
             with state_lock:
                 # Sort by last_seen (most recent first), then by hits
                 sorted_domains = [
-                    {"domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0)}
+                    {
+                        "domain": k, 
+                        "category": v["category"], 
+                        "hits": v["count"], 
+                        "last_seen": v.get("last_seen", 0),
+                        "ml_features": v.get("ml_features", {})
+                    }
                     for k, v in sorted(engine_state["domains"].items(), key=lambda item: (item[1].get("last_seen", 0), item[1]["count"]), reverse=True)
                 ][:50]
                 

@@ -58,6 +58,7 @@ std::string appTypeToString(AppType type) {
         case AppType::TEAMS:      return "MS Teams";
         case AppType::DROPBOX:    return "Dropbox";
         case AppType::CLOUDFLARE: return "Cloudflare";
+        case AppType::UNACADEMY:  return "Unacademy";
         default:                  return "Unknown";
     }
 }
@@ -222,6 +223,12 @@ AppType sniToAppType(const std::string& sni) {
     // Dropbox
     if (lower_sni.find("dropbox") != std::string::npos) {
         return AppType::DROPBOX;
+    }
+    
+    // Unacademy
+    if (lower_sni.find("unacademy") != std::string::npos ||
+        lower_sni.find("uacdn") != std::string::npos) {
+        return AppType::UNACADEMY;
     }
     
     // Cloudflare

@@ -102,6 +102,46 @@ struct FlowEntry {
     uint64_t bytes = 0;
     bool blocked = false;
     bool classified = false;
+
+    // ML Features stats
+    struct {
+        double first_ts = 0;
+        double last_ts = 0;
+        double fwd_last_ts = 0;
+        double bwd_last_ts = 0;
+        
+        uint64_t fwd_packets = 0;
+        uint64_t bwd_packets = 0;
+        uint64_t fwd_bytes = 0;
+        uint64_t bwd_bytes = 0;
+        
+        WelfordStats fwd_len;
+        WelfordStats bwd_len;
+        WelfordStats all_len;
+        
+        WelfordStats fwd_iat;
+        WelfordStats bwd_iat;
+        WelfordStats all_iat;
+        
+        uint32_t fwd_psh_flags = 0;
+        uint32_t bwd_psh_flags = 0;
+        uint32_t syn_flags = 0;
+        uint32_t urg_flags = 0;
+        
+        uint64_t fwd_header_len = 0;
+        uint64_t bwd_header_len = 0;
+        
+        uint32_t init_fwd_win = 0;
+        uint32_t init_bwd_win = 0;
+        uint32_t fwd_act_data_pkts = 0;
+        uint32_t fwd_seg_size_min = 0;
+        
+        // Active/Idle stats
+        WelfordStats active;
+        WelfordStats idle;
+        double current_active_start = 0;
+        double last_active_pkt = 0;
+    } ml;
 };
 
 // =============================================================================
@@ -214,6 +254,82 @@ public:
     
     uint64_t processed() const { return processed_; }
 
+    void exportMLFeatures() {
+        for (auto const& it : flows_) {
+            const FiveTuple& tuple = it.first;
+            const FlowEntry& flow = it.second;
+            if (flow.ml.first_ts == 0) continue;
+            
+            double duration = flow.ml.last_ts - flow.ml.first_ts;
+            if (duration <= 0) duration = 0.0001; // Avoid div by zero
+
+            uint64_t tot_pkts = flow.ml.fwd_packets + flow.ml.bwd_packets;
+            uint64_t tot_bytes = flow.ml.fwd_bytes + flow.ml.bwd_bytes;
+
+            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|STATS:";
+            std::cout << "Flow Duration:" << duration << ",";
+            std::cout << "Total Fwd Packets:" << flow.ml.fwd_packets << ",";
+            std::cout << "Total Backward Packets:" << flow.ml.bwd_packets << ",";
+            std::cout << "Fwd Packets Length Total:" << flow.ml.fwd_bytes << ",";
+            std::cout << "Bwd Packets Length Total:" << flow.ml.bwd_bytes << ",";
+            std::cout << "Fwd Packet Length Max:" << flow.ml.fwd_len.max << ",";
+            std::cout << "Fwd Packet Length Mean:" << flow.ml.fwd_len.mean << ",";
+            std::cout << "Fwd Packet Length Std:" << flow.ml.fwd_len.stddev() << ",";
+            std::cout << "Bwd Packet Length Max:" << flow.ml.bwd_len.max << ",";
+            std::cout << "Bwd Packet Length Mean:" << flow.ml.bwd_len.mean << ",";
+            std::cout << "Bwd Packet Length Std:" << flow.ml.bwd_len.stddev() << ",";
+            std::cout << "Flow Bytes/s:" << (tot_bytes / duration) << ",";
+            std::cout << "Flow Packets/s:" << (tot_pkts / duration) << ",";
+            std::cout << "Flow IAT Mean:" << flow.ml.all_iat.mean << ",";
+            std::cout << "Flow IAT Std:" << flow.ml.all_iat.stddev() << ",";
+            std::cout << "Flow IAT Max:" << flow.ml.all_iat.max << ",";
+            std::cout << "Flow IAT Min:" << flow.ml.all_iat.min << ",";
+            std::cout << "Fwd IAT Total:" << (flow.ml.fwd_last_ts - flow.ml.first_ts) << ",";
+            std::cout << "Fwd IAT Mean:" << flow.ml.fwd_iat.mean << ",";
+            std::cout << "Fwd IAT Std:" << flow.ml.fwd_iat.stddev() << ",";
+            std::cout << "Fwd IAT Max:" << flow.ml.fwd_iat.max << ",";
+            std::cout << "Fwd IAT Min:" << flow.ml.fwd_iat.min << ",";
+            std::cout << "Bwd IAT Total:" << (flow.ml.bwd_last_ts - flow.ml.first_ts) << ",";
+            std::cout << "Bwd IAT Mean:" << flow.ml.bwd_iat.mean << ",";
+            std::cout << "Bwd IAT Std:" << flow.ml.bwd_iat.stddev() << ",";
+            std::cout << "Bwd IAT Max:" << flow.ml.bwd_iat.max << ",";
+            std::cout << "Bwd IAT Min:" << flow.ml.bwd_iat.min << ",";
+            std::cout << "Fwd PSH Flags:" << flow.ml.fwd_psh_flags << ",";
+            std::cout << "Fwd Header Length:" << flow.ml.fwd_header_len << ",";
+            std::cout << "Bwd Header Length:" << flow.ml.bwd_header_len << ",";
+            std::cout << "Fwd Packets/s:" << (flow.ml.fwd_packets / duration) << ",";
+            std::cout << "Bwd Packets/s:" << (flow.ml.bwd_packets / duration) << ",";
+            std::cout << "Packet Length Max:" << flow.ml.all_len.max << ",";
+            std::cout << "Packet Length Mean:" << flow.ml.all_len.mean << ",";
+            std::cout << "Packet Length Std:" << flow.ml.all_len.stddev() << ",";
+            std::cout << "Packet Length Variance:" << flow.ml.all_len.variance() << ",";
+            std::cout << "SYN Flag Count:" << flow.ml.syn_flags << ",";
+            std::cout << "URG Flag Count:" << flow.ml.urg_flags << ",";
+            std::cout << "Avg Packet Size:" << (tot_pkts > 0 ? (tot_bytes / (double)tot_pkts) : 0) << ",";
+            std::cout << "Avg Fwd Segment Size:" << flow.ml.fwd_len.mean << ",";
+            std::cout << "Avg Bwd Segment Size:" << flow.ml.bwd_len.mean << ",";
+            std::cout << "Subflow Fwd Packets:" << flow.ml.fwd_packets << ",";
+            std::cout << "Subflow Fwd Bytes:" << flow.ml.fwd_bytes << ",";
+            std::cout << "Subflow Bwd Packets:" << flow.ml.bwd_packets << ",";
+            std::cout << "Subflow Bwd Bytes:" << flow.ml.bwd_bytes << ",";
+            std::cout << "Init Fwd Win Bytes:" << flow.ml.init_fwd_win << ",";
+            std::cout << "Init Bwd Win Bytes:" << flow.ml.init_bwd_win << ",";
+            std::cout << "Fwd Act Data Packets:" << flow.ml.fwd_act_data_pkts << ",";
+            std::cout << "Fwd Seg Size Min:" << flow.ml.fwd_seg_size_min << ",";
+            std::cout << "Active Mean:" << flow.ml.active.mean << ",";
+            std::cout << "Active Std:" << flow.ml.active.stddev() << ",";
+            std::cout << "Active Max:" << flow.ml.active.max << ",";
+            std::cout << "Active Min:" << flow.ml.active.min << ",";
+            std::cout << "Idle Mean:" << flow.ml.idle.mean << ",";
+            std::cout << "Idle Std:" << flow.ml.idle.stddev() << ",";
+            std::cout << "Idle Max:" << flow.ml.idle.max << ",";
+            std::cout << "Idle Min:" << flow.ml.idle.min << ",";
+            std::cout << "Label:" << appTypeToString(flow.app_type) << ",";
+            std::cout << "ClassLabel:" << static_cast<int>(flow.app_type);
+            std::cout << "\n";
+        }
+    }
+
 private:
     int id_;
     Rules* rules_;
@@ -257,7 +373,66 @@ private:
             if (flow.sni.empty() && (flow.app_type == AppType::HTTPS || flow.app_type == AppType::QUIC || flow.app_type == AppType::UNKNOWN)) {
                 stats_->recordActiveIP(pkt.tuple.dst_ip);
             }
-            
+
+            // --- ML Feature Extraction ---
+            double ts = pkt.ts_sec + (pkt.ts_usec / 1000000.0);
+            if (flow.ml.first_ts == 0) {
+                flow.ml.first_ts = ts;
+                flow.ml.last_ts = ts;
+                flow.ml.current_active_start = ts;
+            }
+
+            double iat = ts - flow.ml.last_ts;
+            flow.ml.last_ts = ts;
+            flow.ml.all_iat.update(iat);
+            flow.ml.all_len.update(pkt.data.size());
+
+            // Check direction
+            bool is_fwd = (pkt.tuple.src_ip == flow.tuple.src_ip);
+            if (is_fwd) {
+                flow.ml.fwd_packets++;
+                flow.ml.fwd_bytes += pkt.data.size();
+                flow.ml.fwd_len.update(pkt.data.size());
+                if (flow.ml.fwd_last_ts > 0) {
+                    flow.ml.fwd_iat.update(ts - flow.ml.fwd_last_ts);
+                }
+                flow.ml.fwd_last_ts = ts;
+                if (pkt.tcp_flags & 0x08) flow.ml.fwd_psh_flags++; // PSH
+                if (pkt.tcp_flags & 0x02) flow.ml.syn_flags++;     // SYN
+                if (pkt.tcp_flags & 0x20) flow.ml.urg_flags++;     // URG
+                
+                // Header length (Ethernet 14 + IP IHL*4 + TCP/UDP)
+                size_t ip_header_len = (pkt.data.size() > 14) ? (pkt.data[14] & 0x0F) * 4 : 20;
+                flow.ml.fwd_header_len += 14 + ip_header_len + (pkt.tuple.protocol == Protocol::TCP ? 20 : 8);
+
+                if (pkt.payload_length > 0) flow.ml.fwd_act_data_pkts++;
+                if (flow.ml.fwd_seg_size_min == 0 || pkt.payload_length < flow.ml.fwd_seg_size_min) {
+                    flow.ml.fwd_seg_size_min = pkt.payload_length;
+                }
+            } else {
+                flow.ml.bwd_packets++;
+                flow.ml.bwd_bytes += pkt.data.size();
+                flow.ml.bwd_len.update(pkt.data.size());
+                if (flow.ml.bwd_last_ts > 0) {
+                    flow.ml.bwd_iat.update(ts - flow.ml.bwd_last_ts);
+                }
+                flow.ml.bwd_last_ts = ts;
+                if (pkt.tcp_flags & 0x08) flow.ml.bwd_psh_flags++; // PSH
+                
+                size_t ip_header_len = (pkt.data.size() > 14) ? (pkt.data[14] & 0x0F) * 4 : 20;
+                flow.ml.bwd_header_len += 14 + ip_header_len + (pkt.tuple.protocol == Protocol::TCP ? 20 : 8);
+            }
+
+            // Idle/Active tracking (simplified)
+            if (ts - flow.ml.last_active_pkt > 1.0) { // 1 second idle threshold
+                if (flow.ml.last_active_pkt > 0) {
+                    flow.ml.idle.update(ts - flow.ml.last_active_pkt);
+                    flow.ml.active.update(flow.ml.last_active_pkt - flow.ml.current_active_start);
+                }
+                flow.ml.current_active_start = ts;
+            }
+            flow.ml.last_active_pkt = ts;
+
             // Forward or drop
             if (flow.blocked) {
                 stats_->dropped++;
@@ -615,6 +790,13 @@ private:
                 std::cout << "  - IP: " << ip_str << "\n";
             }
         }
+
+        // ML Features Detail (JSON-like for parsing)
+        std::cout << "\n[ML_FEATURES_START]\n";
+        for (auto& fp : fps_) {
+            fp->exportMLFeatures();
+        }
+        std::cout << "[ML_FEATURES_END]\n";
     }
 };
 

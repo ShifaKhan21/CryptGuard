@@ -8,8 +8,39 @@
 #include <vector>
 #include <atomic>
 #include <optional>
+#include <cmath>
+#include <algorithm>
 
 namespace DPI {
+
+// ============================================================================
+// Welford's Algorithm for running mean and variance
+// ============================================================================
+struct WelfordStats {
+    uint64_t count = 0;
+    double mean = 0.0;
+    double m2 = 0.0;
+    double min = 0.0;
+    double max = 0.0;
+
+    void update(double x) {
+        if (count == 0) {
+            min = x;
+            max = x;
+        } else {
+            if (x < min) min = x;
+            if (x > max) max = x;
+        }
+        count++;
+        double delta = x - mean;
+        mean += delta / count;
+        double delta2 = x - mean;
+        m2 += delta * delta2;
+    }
+
+    double variance() const { return count > 1 ? m2 / (count - 1) : 0.0; }
+    double stddev() const { return std::sqrt(variance()); }
+};
 
 // ============================================================================
 // Five-Tuple: Uniquely identifies a connection/flow
@@ -85,6 +116,7 @@ enum class AppType {
     TEAMS,
     DROPBOX,
     CLOUDFLARE,
+    UNACADEMY,
     // Add more as needed
     APP_COUNT  // Keep this last for counting
 };
@@ -136,6 +168,46 @@ struct Connection {
     bool syn_seen = false;
     bool syn_ack_seen = false;
     bool fin_seen = false;
+
+    // ML Features stats
+    struct {
+        double first_ts = 0;
+        double last_ts = 0;
+        double fwd_last_ts = 0;
+        double bwd_last_ts = 0;
+        
+        uint64_t fwd_packets = 0;
+        uint64_t bwd_packets = 0;
+        uint64_t fwd_bytes = 0;
+        uint64_t bwd_bytes = 0;
+        
+        WelfordStats fwd_len;
+        WelfordStats bwd_len;
+        WelfordStats all_len;
+        
+        WelfordStats fwd_iat;
+        WelfordStats bwd_iat;
+        WelfordStats all_iat;
+        
+        uint32_t fwd_psh_flags = 0;
+        uint32_t bwd_psh_flags = 0;
+        uint32_t syn_flags = 0;
+        uint32_t urg_flags = 0;
+        
+        uint64_t fwd_header_len = 0;
+        uint64_t bwd_header_len = 0;
+        
+        uint32_t init_fwd_win = 0;
+        uint32_t init_bwd_win = 0;
+        uint32_t fwd_act_data_pkts = 0;
+        uint32_t fwd_seg_size_min = 0;
+        
+        // Active/Idle stats
+        WelfordStats active;
+        WelfordStats idle;
+        double current_active_start = 0;
+        double last_active_pkt = 0;
+    } ml;
 };
 
 // ============================================================================

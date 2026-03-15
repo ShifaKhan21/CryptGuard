@@ -15,6 +15,9 @@ function App() {
     dropped_packets: 0,
   });
 
+  const [selectedFlow, setSelectedFlow] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+
   const [error, setError] = useState(null);
   const pollInterval = useRef(null);
 
@@ -196,6 +199,7 @@ function App() {
               <tr>
                 <th>Destination Domain</th>
                 <th>Application Category</th>
+                <th>ML Features</th>
                 <th style={{ textAlign: 'right' }}>Connection Hits</th>
               </tr>
             </thead>
@@ -209,6 +213,19 @@ function App() {
                   <td>
                     <span className="category-badge">{item.category}</span>
                   </td>
+                  <td>
+                    <button 
+                      className="btn-primary" 
+                      style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                      onClick={() => {
+                        setSelectedFlow(item);
+                        setShowModal(true);
+                      }}
+                      disabled={Object.keys(item.ml_features || {}).length === 0}
+                    >
+                      {Object.keys(item.ml_features || {}).length > 0 ? "View ML Stats" : "Extracting..."}
+                    </button>
+                  </td>
                   <td className="hits-cell" style={{ textAlign: 'right' }}>
                     {item.hits.toLocaleString()}
                   </td>
@@ -218,6 +235,34 @@ function App() {
           </table>
         )}
       </section>
+
+      {showModal && selectedFlow && (
+        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+          <div className="modal-content glass-panel" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>ML Features: {selectedFlow.domain}</h2>
+              <button className="close-btn" onClick={() => setShowModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <div className="features-grid">
+                {Object.entries(selectedFlow.ml_features || {}).map(([key, value]) => (
+                  <div key={key} className="feature-item">
+                    <span className="feature-key">{key}</span>
+                    <span className="feature-value">
+                      {typeof value === 'number' ? 
+                        (key.toLowerCase().includes('iat') || key.toLowerCase().includes('duration') ? value.toFixed(6) : value.toLocaleString()) 
+                        : value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {Object.keys(selectedFlow.ml_features || {}).length === 0 && (
+                <p style={{ textAlign: 'center', opacity: 0.7 }}>No ML features extracted for this flow yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
