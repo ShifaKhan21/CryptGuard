@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './index.css';
 
-const API_BASE_URL = 'http://localhost:8081/api';
+const API_BASE_URL = 'http://127.0.0.1:8081/api';
 
 function App() {
   const [interfaces, setInterfaces] = useState([]);
@@ -14,6 +14,7 @@ function App() {
     forwarded_packets: 0,
     dropped_packets: 0,
   });
+  const [expandedRows, setExpandedRows] = useState({});
 
   const [error, setError] = useState(null);
   const pollInterval = useRef(null);
@@ -26,7 +27,7 @@ function App() {
   // Poll for stats when capturing
   useEffect(() => {
     if (isCapturing) {
-      pollInterval.current = setInterval(fetchStats, 1000);
+      pollInterval.current = setInterval(fetchStats, 500);
     } else {
       if (pollInterval.current) clearInterval(pollInterval.current);
     }
@@ -64,6 +65,13 @@ function App() {
     } catch (err) {
       console.error("Error fetching stats:", err);
     }
+  };
+
+  const toggleRow = (domain) => {
+    setExpandedRows(prev => ({
+      ...prev,
+      [domain]: !prev[domain]
+    }));
   };
 
   const handleStartCapture = async () => {
@@ -204,33 +212,57 @@ function App() {
             </thead>
             <tbody>
               {stats.domains.map((item, index) => (
-                <tr key={index}>
-                  <td className="domain-cell">
-                    <div className="domain-icon">{item.domain.charAt(0).toUpperCase()}</div>
-                    {item.domain}
-                  </td>
-                  <td>
-                    <span className="category-badge">{item.category}</span>
-                  </td>
-                  <td>
-                    <span className={`status-badge ${item.ml_prediction === 'MALWARE' ? 'danger' : 'safe'}`} style={{ 
-                      padding: '4px 8px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: 'bold',
-                      backgroundColor: item.ml_prediction === 'MALWARE' ? 'rgba(255, 76, 76, 0.15)' : 'rgba(76, 255, 120, 0.15)',
-                      color: item.ml_prediction === 'MALWARE' ? '#ff4c4c' : '#4cff78'
-                    }}>
-                      {item.ml_prediction || 'BENIGN'}
-                    </span>
-                  </td>
-                  <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                    {item.ml_confidence ? `${item.ml_confidence}%` : '--'}
-                  </td>
-                  <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                    {item.last_seen_time || '--:--:--'}
-                  </td>
-                  <td className="hits-cell" style={{ textAlign: 'right' }}>
-                    {item.hits.toLocaleString()}
-                  </td>
-                </tr>
+                <React.Fragment key={index}>
+                  <tr onClick={() => toggleRow(item.domain)} style={{ cursor: 'pointer' }} title="Click to view raw ML Features">
+                    <td className="domain-cell">
+                      <div className="domain-icon">{item.domain.charAt(0).toUpperCase()}</div>
+                      {item.domain}
+                    </td>
+                    <td>
+                      <span className="category-badge">{item.category}</span>
+                    </td>
+                    <td>
+                      <span className={`status-badge ${item.ml_prediction === 'MALWARE' ? 'danger' : 'safe'}`} style={{ 
+                        padding: '4px 8px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: 'bold',
+                        backgroundColor: item.ml_prediction === 'MALWARE' ? 'rgba(255, 76, 76, 0.15)' : 'rgba(76, 255, 120, 0.15)',
+                        color: item.ml_prediction === 'MALWARE' ? '#ff4c4c' : '#4cff78'
+                      }}>
+                        {item.ml_prediction || 'BENIGN'}
+                      </span>
+                    </td>
+                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                      {item.ml_confidence !== "--" ? `${item.ml_confidence}%` : '--%'}
+                    </td>
+                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                      {item.last_seen_time || '--:--:--'}
+                    </td>
+                    <td className="hits-cell" style={{ textAlign: 'right' }}>
+                      {item.hits.toLocaleString()}
+                    </td>
+                  </tr>
+                  {expandedRows[item.domain] && item.extended_features && Object.keys(item.extended_features).length > 0 && (
+                    <tr className="expanded-features-row">
+                      <td colSpan="6" style={{ padding: '0', backgroundColor: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-color)' }}>
+                        <div style={{ padding: '16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', marginBottom: '8px', color: 'var(--text-primary)', fontWeight: 'bold' }}>
+                            ML Flow Features (CICFlowMeter)
+                          </div>
+                          {Object.entries(item.extended_features).filter(([_, v]) => v && v !== '0' && v !== '0.0').slice(0, 16).map(([key, value]) => (
+                             <div key={key} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 8px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '4px' }}>
+                               <span style={{ opacity: 0.8 }}>{key}:</span>
+                               <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>{value}</span>
+                             </div>
+                          ))}
+                          {Object.keys(item.extended_features).length > 20 && (
+                             <div style={{ gridColumn: '1 / -1', textAlign: 'center', paddingTop: '8px', fontSize: '0.75rem', opacity: 0.6 }}>
+                               ... and {Object.keys(item.extended_features).length - 16} more feature dimensions (filtered empty values)
+                             </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
