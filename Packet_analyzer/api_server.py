@@ -136,18 +136,24 @@ def run_dpi_capture_loop():
                     if line.startswith("║ Total Packets:"):
                          parts = line.split()
                          if len(parts) >= 4:
-                             try: engine_state["total_packets"] += int(parts[3])
-                             except: pass
+                             try:
+                                 engine_state["total_packets"] += int(parts[3])
+                             except:
+                                 pass
                     elif line.startswith("║ Forwarded:"):
                          parts = line.split()
                          if len(parts) >= 3:
-                             try: engine_state["forwarded_packets"] += int(parts[2])
-                             except: pass
+                             try:
+                                 engine_state["forwarded_packets"] += int(parts[2])
+                             except:
+                                 pass
                     elif line.startswith("║ Dropped:"):
                          parts = line.split()
                          if len(parts) >= 3:
-                             try: engine_state["dropped_packets"] += int(parts[2])
-                             except: pass
+                             try:
+                                 engine_state["dropped_packets"] += int(parts[2])
+                             except:
+                                 pass
                              
                     # Section detection
                     if "[Detected Domains/SNIs]" in line:
@@ -303,9 +309,9 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
 def start_server():
-    server_address = ('', 8080)
+    server_address = ('', 8081)
     httpd = ThreadedHTTPServer(server_address, APIHandler)
-    print(f"API Server listening on port 8080...")
+    print(f"API Server listening on port 8081...")
     
     capture_thread = threading.Thread(target=run_dpi_capture_loop, daemon=True)
     capture_thread.start()

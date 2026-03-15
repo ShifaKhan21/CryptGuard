@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import './index.css';
 
-const API_BASE_URL = 'http://localhost:8080/api';
+const API_BASE_URL = 'http://localhost:8081/api';
 
 function App() {
   const [interfaces, setInterfaces] = useState([]);
