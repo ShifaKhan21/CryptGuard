@@ -300,9 +300,9 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
 def start_server():
-    server_address = ('', 8080)
+    server_address = ('', 8081)
     httpd = ThreadedHTTPServer(server_address, APIHandler)
-    print(f"API Server listening on port 8080...")
+    print(f"API Server listening on port 8081...")
     
     capture_thread = threading.Thread(target=run_dpi_capture_loop, daemon=True)
     capture_thread.start()
