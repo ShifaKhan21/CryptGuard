@@ -176,9 +176,9 @@ function App() {
 
       <section className="glass-panel scoreboard-container">
         <div className="scoreboard-header">
-          <h2>Top Network Destinations</h2>
+          <h2>Top Real-Time Destinations</h2>
           <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Detected via SNI/DNS Inspection
+            Inspected via ML DPI Engine
           </span>
         </div>
 
@@ -187,46 +187,54 @@ function App() {
              {isCapturing ? (
                <>
                  <div className="status-dot" style={{ margin: '0 auto 1rem', width: '12px', height: '12px' }}></div>
-                 <p>Listening for traffic... Open a browser and visit some websites.</p>
+                 <p>Analyzing Live Traffic... Visit a website to begin extraction.</p>
                </>
              ) : (
-               <p>No traffic data available. Select an interface and start the inspection.</p>
+               <p>No traffic data available. Select an interface and start inspection.</p>
              )}
            </div>
         ) : (
           <table>
             <thead>
               <tr>
-                <th>Destination Domain</th>
-                <th>Application Category</th>
-                <th>ML Features</th>
-                <th style={{ textAlign: 'right' }}>Connection Hits</th>
+                <th>Official Destination</th>
+                <th>Category</th>
+                <th>ML Statistics</th>
+                <th style={{ textAlign: 'right' }}>Hits</th>
               </tr>
             </thead>
             <tbody>
-              {stats.domains.map((item, index) => (
+              {stats.domains
+                .filter(item => !item.domain.includes('Local PC'))
+                .map((item, index) => (
                 <tr key={index}>
                   <td className="domain-cell">
                     <div className="domain-icon">{item.domain.charAt(0).toUpperCase()}</div>
                     {item.domain}
                   </td>
                   <td>
-                    <span className="category-badge">{item.category}</span>
+                    <span className="category-badge" style={{
+                      backgroundColor: item.category === 'Unacademy' ? 'rgba(4, 215, 114, 0.2)' : 
+                                      item.category === 'Netflix' ? 'rgba(229, 9, 20, 0.2)' :
+                                      item.category === 'Twitter/X' ? 'rgba(29, 161, 242, 0.2)' : 'rgba(255,255,255,0.1)'
+                    }}>
+                      {item.category}
+                    </span>
                   </td>
                   <td>
                     <button 
                       className="btn-primary" 
-                      style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                      style={{ padding: '4px 12px', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: '600' }}
                       onClick={() => {
                         setSelectedFlow(item);
                         setShowModal(true);
                       }}
                       disabled={Object.keys(item.ml_features || {}).length === 0}
                     >
-                      {Object.keys(item.ml_features || {}).length > 0 ? "View ML Stats" : "Extracting..."}
+                      {Object.keys(item.ml_features || {}).length > 0 ? "Inspect Features" : "Extracting..."}
                     </button>
                   </td>
-                  <td className="hits-cell" style={{ textAlign: 'right' }}>
+                  <td className="hits-cell" style={{ textAlign: 'right', fontWeight: 'bold' }}>
                     {item.hits.toLocaleString()}
                   </td>
                 </tr>
@@ -238,27 +246,54 @@ function App() {
 
       {showModal && selectedFlow && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-content glass-panel" onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ maxWidth: '900px', width: '90%' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>ML Features: {selectedFlow.domain}</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <div className="domain-icon" style={{ width: '40px', height: '40px', fontSize: '1.2rem' }}>
+                  {selectedFlow.domain.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <h2 style={{ margin: 0 }}>{selectedFlow.domain}</h2>
+                  <span style={{ fontSize: '0.8rem', opacity: 0.7 }}>Full Machine Learning Feature Set</span>
+                </div>
+              </div>
               <button className="close-btn" onClick={() => setShowModal(false)}>&times;</button>
             </div>
-            <div className="modal-body">
+            <div className="modal-body" style={{ maxHeight: '70vh', padding: '20px' }}>
               <div className="features-grid">
                 {Object.entries(selectedFlow.ml_features || {}).map(([key, value]) => (
-                  <div key={key} className="feature-item">
-                    <span className="feature-key">{key}</span>
-                    <span className="feature-value">
+                  <div key={key} className="feature-item" style={{ 
+                    background: 'rgba(255,255,255,0.03)', 
+                    border: '1px solid rgba(255,255,255,0.05)',
+                    padding: '12px',
+                    borderRadius: '8px'
+                  }}>
+                    <div className="feature-key" style={{ 
+                      fontSize: '0.65rem', 
+                      textTransform: 'uppercase', 
+                      letterSpacing: '0.5px',
+                      color: 'var(--secondary-color)',
+                      marginBottom: '4px'
+                    }}>
+                      {key}
+                    </div>
+                    <div className="feature-value" style={{ 
+                      fontSize: '1.1rem', 
+                      fontWeight: '700',
+                      fontFamily: '"JetBrains Mono", monospace'
+                    }}>
                       {typeof value === 'number' ? 
-                        (key.toLowerCase().includes('iat') || key.toLowerCase().includes('duration') ? value.toFixed(6) : value.toLocaleString()) 
+                        (key.toLowerCase().includes('iat') || key.toLowerCase().includes('duration') || key.toLowerCase().includes('std') || key.toLowerCase().includes('mean') ? 
+                          value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 6 }) : 
+                          value.toLocaleString()) 
                         : value}
-                    </span>
+                    </div>
                   </div>
                 ))}
               </div>
-              {Object.keys(selectedFlow.ml_features || {}).length === 0 && (
-                <p style={{ textAlign: 'center', opacity: 0.7 }}>No ML features extracted for this flow yet.</p>
-              )}
+            </div>
+            <div className="modal-footer" style={{ padding: '15px', borderTop: '1px solid rgba(255,255,255,0.1)', textAlign: 'center' }}>
+                <span style={{ fontSize: '0.75rem', opacity: 0.5 }}>All features extracted in real-time via CryptGuard DPI Multi-Threaded Engine</span>
             </div>
           </div>
         </div>
