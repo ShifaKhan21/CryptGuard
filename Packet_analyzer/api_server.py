@@ -6,6 +6,7 @@ import json
 import threading
 import platform
 import socket
+import struct
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
@@ -66,13 +67,33 @@ def get_friendly_name(ip):
         google_prefixes = ["142.250", "142.251", "172.217", "172.253", "216.58", "216.239", "74.125"]
         if any(ip.startswith(p) for p in google_prefixes): return "Google Service"
         
-        # Cloudflare
-        cf_prefixes = ["104.16", "104.17", "104.18", "104.19", "104.20", "172.64", "172.67", "162.159"]
+        # Microsoft / Azure / Bing / M365 (Broad ranges)
+        ms_prefixes = ["13.", "20.", "40.", "52.", "104.40", "104.41", "104.42", "104.43", "104.44", "104.45", "104.46", "104.47", "131.107", "150.171", "191.232", "191.233", "191.234", "191.235"]
+        if any(ip.startswith(p) for p in ms_prefixes):
+            return "Microsoft Service/Azure"
+        
+        # LinkedIn (Specific blocks)
+        linkedin_prefixes = ["108.174", "144.121", "199.101", "199.59", "65.195", "64.15"]
+        if any(ip.startswith(p) for p in linkedin_prefixes):
+            return "LinkedIn"
+
+        # Cloudflare (Expanded)
+        cf_prefixes = ["104.16", "104.17", "104.18", "104.19", "104.20", "104.21", "172.64", "172.65", "172.66", "172.67", "172.68", "172.69", "172.70", "162.158", "162.159"]
         if any(ip.startswith(p) for p in cf_prefixes): return "Cloudflare CDN"
 
-        # AWS (Highly variable, but some common ones)
-        aws_prefixes = ["52.216", "52.217", "54.231", "54.239", "3.5", "18.160", "13.224"]
-        if any(ip.startswith(p) for p in aws_prefixes): return "AWS Service"
+        # AWS / Amazon / WWE (Expanded)
+        aws_prefixes = ["52.216", "52.217", "54.", "3.5", "18.", "13.224", "99.84", "99.86", "15.158", "3.235"]
+        if any(ip.startswith(p) for p in aws_prefixes): return "AWS/Amazon Service"
+        
+        # Akamai / Fastly / CDNs
+        cdn_prefixes = ["23.", "104.64", "104.120", "151.101", "157.240", "31.13", "185.60", "69.171"]
+        if any(ip.startswith(p) for p in cdn_prefixes): 
+            if ip.startswith("151.101"): return "Fastly CDN"
+            if ip.startswith("157.240") or ip.startswith("31.13"): return "Facebook/Meta Service"
+            return "CDN (Akamai/Edge)"
+
+        # Valve / Steam (User screenshot had 155.133)
+        if ip.startswith("155.133") or ip.startswith("162.254"): return "Valve/Steam"
 
         # Private ranges
         parts = list(map(int, ip.split('.')))
@@ -380,26 +401,52 @@ def run_dpi_capture_loop():
 
                     if ml_section:
                         if line.startswith("FLOW_ID:"):
-                            # Format: FLOW_ID:domain|IP:123|STATS:Key:Val,Key:Val...
+                            # Format: FLOW_ID:domain|IP:123|STATS:Key:Val...
                             try:
                                 main_parts = line.split("|")
-                                domain = main_parts[0].split(":")[1]
-                                if not domain: continue # Only track SNI/Known domains for now
+                                domain_from_flow = main_parts[0].split(":")[1]
+                                ip_int_val = int(main_parts[1].split(":")[1])
+                                
+                                # Convert int IP back to string (Little Endian as per C++ engine)
+                                ip_str_val = f"{ip_int_val & 0xFF}.{(ip_int_val >> 8) & 0xFF}.{(ip_int_val >> 16) & 0xFF}.{(ip_int_val >> 24) & 0xFF}"
                                 
                                 stats_str = main_parts[2].split(":", 1)[1]
                                 stats_dict = {}
                                 for pair in stats_str.split(","):
                                     if ":" in pair:
                                         k, v = pair.split(":")
-                                        try:
-                                            stats_dict[k] = float(v)
-                                        except:
-                                            stats_dict[k] = v
-                                    
-                                if domain in domains:
-                                    domains[domain]["ml_features"] = stats_dict
+                                        try: stats_dict[k] = float(v)
+                                        except: stats_dict[k] = v
+                                
+                                # Find entry in domains
+                                # Check the flow's domain first, then fallback to our local cache for that IP
+                                potential_keys = []
+                                if domain_from_flow and domain_from_flow != "unknown":
+                                    potential_keys.append(domain_from_flow)
+                                
+                                # Always try to match by IP or its currently cached name
+                                with dns_lock:
+                                    resolved_name = dns_cache.get(ip_str_val)
+                                    if resolved_name:
+                                        potential_keys.append(resolved_name)
+                                potential_keys.append(ip_str_val)
+                                
+                                # Try to find a matching active row
+                                target_domain = None
+                                for key in potential_keys:
+                                    if key in domains:
+                                        target_domain = key
+                                        break
+                                
+                                if target_domain:
+                                    if "ml_features" not in domains[target_domain] or not domains[target_domain]["ml_features"]:
+                                        domains[target_domain]["ml_features"] = stats_dict
+                                    else:
+                                        # Only update if new stats are more complete
+                                        if len(stats_dict) >= len(domains[target_domain].get("ml_features", {})):
+                                            domains[target_domain]["ml_features"].update(stats_dict)
                             except Exception as e:
-                                log_debug(f"ML Parse Error: {e} on line: {line}")
+                                log_debug(f"ML Parser error: {e}")
 
                 # Update state back from local vars
                 engine_state["total_packets"] = total_packets
