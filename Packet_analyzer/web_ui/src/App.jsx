@@ -196,6 +196,8 @@ function App() {
               <tr>
                 <th>Destination Domain</th>
                 <th>Application Category</th>
+                <th>ML Classification</th>
+                <th>Confidence</th>
                 <th>Last Seen</th>
                 <th style={{ textAlign: 'right' }}>Connection Hits</th>
               </tr>
@@ -209,6 +211,18 @@ function App() {
                   </td>
                   <td>
                     <span className="category-badge">{item.category}</span>
+                  </td>
+                  <td>
+                    <span className={`status-badge ${item.ml_prediction === 'MALWARE' ? 'danger' : 'safe'}`} style={{ 
+                      padding: '4px 8px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: 'bold',
+                      backgroundColor: item.ml_prediction === 'MALWARE' ? 'rgba(255, 76, 76, 0.15)' : 'rgba(76, 255, 120, 0.15)',
+                      color: item.ml_prediction === 'MALWARE' ? '#ff4c4c' : '#4cff78'
+                    }}>
+                      {item.ml_prediction || 'BENIGN'}
+                    </span>
+                  </td>
+                  <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    {item.ml_confidence ? `${item.ml_confidence}%` : '--'}
                   </td>
                   <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                     {item.last_seen_time || '--:--:--'}

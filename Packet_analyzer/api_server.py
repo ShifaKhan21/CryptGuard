@@ -6,8 +6,24 @@ import json
 import threading
 import platform
 import socket
+import pickle
+import pandas as pd
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+
+# Try loading XGBoost model
+ML_MODEL = None
+EXPECTED_FEATURES = None
+try:
+    with open('model/xgb_model.pkl', 'rb') as f:
+        ML_MODEL = pickle.load(f)
+        if hasattr(ML_MODEL, 'feature_names_in_'):
+            EXPECTED_FEATURES = list(ML_MODEL.feature_names_in_)
+            print(f"✅ Loaded XGBoost Model with {len(EXPECTED_FEATURES)} features.")
+        else:
+            print("⚠️ Loaded XGBoost Model but it's missing 'feature_names_in_' metadata.")
+except Exception as e:
+    print(f"❌ Failed to load ML Model: {e}")
 
 # Constants
 TSHARK_PATH = r"C:\Program Files\Wireshark\tshark.exe" if platform.system() == "Windows" else "tshark"
@@ -22,7 +38,7 @@ engine_state = {
     "interfaces": [],
     "selected_interface": None,
     "is_capturing": False,
-    "domains": {}, # Format: {domain: {"count": X, "category": Y, "last_seen": timestamp}}
+    "domains": {}, # Format: {domain: {"count": X, "category": Y, "last_seen": timestamp, "last_seen_time": str, "ml_prediction": str, "ml_confidence": str}}
     "last_update": 0,
     "total_packets": 0,
     "dropped_packets": 0,
@@ -110,6 +126,45 @@ def run_dpi_capture_loop():
         if not os.path.exists(TEMP_PCAP):
             continue
 
+        # 1.5 Extract ML Features via CICFlowMeter
+        features_csv = "live_features.csv"
+        try:
+             # Run cicflowmeter on the pcap. It creates a CSV file in the same directory.
+             cf_cmd = ["cicflowmeter", "-f", TEMP_PCAP, "-c", features_csv]
+             subprocess.run(cf_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        except Exception as e:
+             log_debug(f"CICFlowMeter Error: {e}")
+             
+        # 1.6 Run ML Inference
+        flow_predictions = []
+        if ML_MODEL and EXPECTED_FEATURES and os.path.exists(features_csv):
+             try:
+                 df = pd.read_csv(features_csv)
+                 # Map columns if necessary or just filter by expected
+                 available_features = [col for col in EXPECTED_FEATURES if col in df.columns]
+                 
+                 if len(available_features) == len(EXPECTED_FEATURES):
+                     X_pred = df[EXPECTED_FEATURES]
+                     preds = ML_MODEL.predict(X_pred)
+                     probs = ML_MODEL.predict_proba(X_pred) if hasattr(ML_MODEL, "predict_proba") else []
+                     
+                     for i, row in df.iterrows():
+                         src_ip = row.get('Src IP')
+                         dst_ip = row.get('Dst IP')
+                         pred_class = "MALWARE" if preds[i] == 1 else "BENIGN"
+                         confidence = round(probs[i].max() * 100, 1) if len(probs) > 0 else "--"
+                         
+                         flow_predictions.append({
+                             "ip1": src_ip, 
+                             "ip2": dst_ip, 
+                             "class": pred_class, 
+                             "conf": confidence
+                         })
+                 else:
+                     log_debug(f"Missing features in CSV. Expected {len(EXPECTED_FEATURES)}, Found {len(available_features)}")
+             except Exception as e:
+                 log_debug(f"Inference Error: {e}")
+
         # 2. Run C++ DPI engine
         try:
             cwd = os.getcwd().replace('\\', '/')
@@ -179,7 +234,9 @@ def run_dpi_capture_loop():
                                     domain = "Local PC (" + LOCAL_HOSTNAME + ")"
 
                                 if domain not in engine_state["domains"]:
-                                    engine_state["domains"][domain] = {"count": 0, "category": category, "last_seen": now, "last_seen_time": now_time}
+                                    engine_state["domains"][domain] = {
+                                        "count": 0, "category": category, "last_seen": now, "last_seen_time": now_time, "ml_prediction": "BENIGN", "ml_confidence": "--"
+                                    }
                                 engine_state["domains"][domain]["count"] += 1
                                 engine_state["domains"][domain]["last_seen"] = now
                                 engine_state["domains"][domain]["last_seen_time"] = now_time
@@ -195,7 +252,17 @@ def run_dpi_capture_loop():
                                 resolved = dns_cache[ip_addr]
                                 if resolved:
                                     if resolved not in engine_state["domains"]:
-                                        engine_state["domains"][resolved] = {"count": 0, "category": "Active Connection", "last_seen": now, "last_seen_time": now_time}
+                                        engine_state["domains"][resolved] = {
+                                            "count": 0, "category": "Active Connection", "last_seen": now, "last_seen_time": now_time, "ml_prediction": "BENIGN", "ml_confidence": "--"
+                                        }
+                                        
+                                    # Correlate flow predictions with IPs
+                                    for f_pred in flow_predictions:
+                                         if ip_addr == f_pred['ip1'] or ip_addr == f_pred['ip2']:
+                                             if f_pred['class'] == 'MALWARE':
+                                                  engine_state["domains"][resolved]["ml_prediction"] = "MALWARE"
+                                                  engine_state["domains"][resolved]["ml_confidence"] = f_pred['conf']
+                                                  
                                     engine_state["domains"][resolved]["count"] += 1
                                     engine_state["domains"][resolved]["last_seen"] = now
                                     engine_state["domains"][resolved]["last_seen_time"] = now_time
@@ -211,6 +278,7 @@ def run_dpi_capture_loop():
             # Cleanup temp files for this iteration
             if os.path.exists(TEMP_PCAP): os.remove(TEMP_PCAP)
             if os.path.exists(TEMP_OUT): os.remove(TEMP_OUT)
+            if os.path.exists(features_csv): os.remove(features_csv)
 
         except Exception as e:
             print(f"Error running DPI engine: {e}")
@@ -253,7 +321,15 @@ class APIHandler(BaseHTTPRequestHandler):
             with state_lock:
                 # Sort by last_seen (most recent first), then by hits
                 sorted_domains = [
-                    {"domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0)}
+                    {
+                        "domain": k, 
+                        "category": v["category"], 
+                        "hits": v["count"], 
+                        "last_seen": v.get("last_seen", 0),
+                        "last_seen_time": v.get("last_seen_time", "--:--:--"),
+                        "ml_prediction": v.get("ml_prediction", "BENIGN"),
+                        "ml_confidence": v.get("ml_confidence", "--")
+                    }
                     for k, v in sorted(engine_state["domains"].items(), key=lambda item: (item[1].get("last_seen", 0), item[1]["count"]), reverse=True)
                 ][:50]
                 
