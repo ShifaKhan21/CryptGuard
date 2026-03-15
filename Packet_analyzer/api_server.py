@@ -84,6 +84,17 @@ def log_debug(msg):
     with open("debug.log", "a") as f:
         f.write(f"{time.time()}: {msg}\n")
 
+def safe_remove(file_path):
+    """Safely remove a file with retries for Windows file locks"""
+    if not os.path.exists(file_path):
+        return
+    for _ in range(5):
+        try:
+            os.remove(file_path)
+            return
+        except OSError:
+            time.sleep(0.5)
+
 def run_dpi_capture_loop():
     global engine_state
     
@@ -98,6 +109,10 @@ def run_dpi_capture_loop():
             time.sleep(1)
             continue
             
+        # 0. Pre-cleanup
+        safe_remove(TEMP_PCAP)
+        safe_remove(TEMP_OUT)
+
         # 1. Capture traffic using tshark
         try:
             cmd = [TSHARK_PATH, "-i", str(interface_idx), "-a", f"duration:{CAPTURE_DURATION}", "-w", TEMP_PCAP, "-F", "pcap", "-q"]
@@ -123,6 +138,12 @@ def run_dpi_capture_loop():
             # 3. Parse and aggregate output
             now = time.time()
             with state_lock:
+                # Use local references with explicit casts for Pyre
+                domains = engine_state["domains"]
+                total_packets = int(engine_state.get("total_packets", 0))
+                forwarded_packets = int(engine_state.get("forwarded_packets", 0))
+                dropped_packets = int(engine_state.get("dropped_packets", 0))
+                
                 # Parse packet stats
                 lines = dpi_output.split('\n')
                 sni_section = False
@@ -135,17 +156,17 @@ def run_dpi_capture_loop():
                     if line.startswith("║ Total Packets:"):
                          parts = line.split()
                          if len(parts) >= 4:
-                             try: engine_state["total_packets"] += int(parts[3])
+                             try: total_packets += int(parts[3])
                              except: pass
                     elif line.startswith("║ Forwarded:"):
                          parts = line.split()
                          if len(parts) >= 3:
-                             try: engine_state["forwarded_packets"] += int(parts[2])
+                             try: forwarded_packets += int(parts[2])
                              except: pass
                     elif line.startswith("║ Dropped:"):
                          parts = line.split()
                          if len(parts) >= 3:
-                             try: engine_state["dropped_packets"] += int(parts[2])
+                             try: dropped_packets += int(parts[2])
                              except: pass
                              
                     # Section detection
@@ -171,10 +192,12 @@ def run_dpi_capture_loop():
                                 if domain.lower() == LOCAL_HOSTNAME.lower():
                                     domain = "Local PC (" + LOCAL_HOSTNAME + ")"
 
-                                if domain not in engine_state["domains"]:
-                                    engine_state["domains"][domain] = {"count": 0, "category": category, "last_seen": now}
-                                engine_state["domains"][domain]["count"] += 1
-                                engine_state["domains"][domain]["last_seen"] = now
+                                if domain not in domains:
+                                    domains[domain] = {"count": 0, "category": category, "last_seen": now}
+                                
+                                if domain in domains:
+                                    domains[domain]["count"] += 1
+                                    domains[domain]["last_seen"] = now
                         elif not line.startswith("║"):
                             sni_section = False
 
@@ -186,10 +209,12 @@ def run_dpi_capture_loop():
                             if ip_addr in dns_cache:
                                 resolved = dns_cache[ip_addr]
                                 if resolved:
-                                    if resolved not in engine_state["domains"]:
-                                        engine_state["domains"][resolved] = {"count": 0, "category": "Active Connection", "last_seen": now}
-                                    engine_state["domains"][resolved]["count"] += 1
-                                    engine_state["domains"][resolved]["last_seen"] = now
+                                    if resolved not in domains:
+                                        domains[resolved] = {"count": 0, "category": "Active Connection", "last_seen": now}
+                                    
+                                    if resolved in domains:
+                                        domains[resolved]["count"] += 1
+                                        domains[resolved]["last_seen"] = now
                             else:
                                 with dns_lock:
                                     if ip_addr not in dns_queue:
@@ -197,11 +222,25 @@ def run_dpi_capture_loop():
                         elif not line.startswith("║"):
                             active_ip_section = False
 
+                # Update state back from local vars
+                engine_state["total_packets"] = total_packets
+                engine_state["forwarded_packets"] = forwarded_packets
+                engine_state["dropped_packets"] = dropped_packets
                 engine_state["last_update"] = now
                 
+                # Prune old domains (Decay mechanism)
+                expired_domains = [
+                    d for d, data in domains.items() 
+                    if now - data.get("last_seen", 0) > DECAY_TIMEOUT
+                ]
+                for d in expired_domains:
+                    del domains[d]
+
             # Cleanup temp files for this iteration
-            if os.path.exists(TEMP_PCAP): os.remove(TEMP_PCAP)
-            if os.path.exists(TEMP_OUT): os.remove(TEMP_OUT)
+            safe_remove(TEMP_PCAP)
+            safe_remove(TEMP_OUT)
+
+
 
         except Exception as e:
             print(f"Error running DPI engine: {e}")
