@@ -10,7 +10,7 @@ TSHARK_PATH = r"C:\Program Files\Wireshark\tshark.exe" if platform.system() == "
 DPI_ENGINE_PATH = "dpi_engine.exe" if platform.system() == "Windows" else "./dpi_engine"
 TEMP_PCAP = "live_temp_capture.pcap"
 TEMP_OUT = "live_temp_output.pcap"
-CAPTURE_DURATION = 3  # seconds
+CAPTURE_DURATION = 1  # seconds (Faster updates)
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
