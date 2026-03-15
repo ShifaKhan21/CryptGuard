@@ -26,7 +26,7 @@ function App() {
   // Poll for stats when capturing
   useEffect(() => {
     if (isCapturing) {
-      pollInterval.current = setInterval(fetchStats, 2000);
+      pollInterval.current = setInterval(fetchStats, 1000);
     } else {
       if (pollInterval.current) clearInterval(pollInterval.current);
     }
@@ -196,6 +196,7 @@ function App() {
               <tr>
                 <th>Destination Domain</th>
                 <th>Application Category</th>
+                <th>Last Seen</th>
                 <th style={{ textAlign: 'right' }}>Connection Hits</th>
               </tr>
             </thead>
@@ -208,6 +209,9 @@ function App() {
                   </td>
                   <td>
                     <span className="category-badge">{item.category}</span>
+                  </td>
+                  <td style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    {item.last_seen_time || '--:--:--'}
                   </td>
                   <td className="hits-cell" style={{ textAlign: 'right' }}>
                     {item.hits.toLocaleString()}

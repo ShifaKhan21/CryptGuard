@@ -14,7 +14,7 @@ TSHARK_PATH = r"C:\Program Files\Wireshark\tshark.exe" if platform.system() == "
 DPI_ENGINE_PATH = "dpi_engine.exe" if platform.system() == "Windows" else "./dpi_engine"
 TEMP_PCAP = "api_temp_capture.pcap"
 TEMP_OUT = "api_temp_output.pcap"
-CAPTURE_DURATION = 2  # Reduced for faster updates
+CAPTURE_DURATION = 1  # Ultra-fast 1-second updates
 
 # Global State
 LOCAL_HOSTNAME = socket.gethostname()
@@ -122,6 +122,7 @@ def run_dpi_capture_loop():
             
             # 3. Parse and aggregate output
             now = time.time()
+            now_time = time.strftime('%H:%M:%S', time.localtime(now))
             with state_lock:
                 # Parse packet stats
                 lines = dpi_output.split('\n')
@@ -172,9 +173,10 @@ def run_dpi_capture_loop():
                                     domain = "Local PC (" + LOCAL_HOSTNAME + ")"
 
                                 if domain not in engine_state["domains"]:
-                                    engine_state["domains"][domain] = {"count": 0, "category": category, "last_seen": now}
+                                    engine_state["domains"][domain] = {"count": 0, "category": category, "last_seen": now, "last_seen_time": now_time}
                                 engine_state["domains"][domain]["count"] += 1
                                 engine_state["domains"][domain]["last_seen"] = now
+                                engine_state["domains"][domain]["last_seen_time"] = now_time
                         elif not line.startswith("║"):
                             sni_section = False
 
@@ -187,9 +189,10 @@ def run_dpi_capture_loop():
                                 resolved = dns_cache[ip_addr]
                                 if resolved:
                                     if resolved not in engine_state["domains"]:
-                                        engine_state["domains"][resolved] = {"count": 0, "category": "Active Connection", "last_seen": now}
+                                        engine_state["domains"][resolved] = {"count": 0, "category": "Active Connection", "last_seen": now, "last_seen_time": now_time}
                                     engine_state["domains"][resolved]["count"] += 1
                                     engine_state["domains"][resolved]["last_seen"] = now
+                                    engine_state["domains"][resolved]["last_seen_time"] = now_time
                             else:
                                 with dns_lock:
                                     if ip_addr not in dns_queue:

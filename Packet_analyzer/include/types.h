@@ -84,6 +84,7 @@ enum class AppType {
     SLACK,
     TEAMS,
     DROPBOX,
+    UNACADEMY,
     CLOUDFLARE,
     // Add more as needed
     APP_COUNT  // Keep this last for counting
