@@ -223,7 +223,7 @@ function App() {
                 <th>Official Destination</th>
                 <th>Service (PID)</th>
                 <th>Category</th>
-                <th>Risk Score</th>
+                <th>Productivity Score</th>
                 <th>AI Verdict</th>
                 <th style={{ textAlign: 'right' }}>Hits</th>
                 <th style={{ textAlign: 'center' }}>Actions</th>
@@ -269,6 +269,11 @@ function App() {
                     <span className={`verdict-badge ${item.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>
                       {item.prediction}
                     </span>
+                    {item.beacon_detected && (
+                      <span className="verdict-badge malicious" style={{ display: 'block', marginTop: '4px', fontSize: '0.6rem' }}>
+                        BEACON DETECTED
+                      </span>
+                    )}
                   </td>
                   <td className="hits-cell" style={{ textAlign: 'right', fontWeight: 'bold' }}>
                     {item.hits.toLocaleString()}
@@ -320,7 +325,7 @@ function App() {
                       {selectedFlow.prediction}
                     </span>
                     <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                      Risk Level: <strong style={{ color: selectedFlow.risk_score > 50 ? '#ff4c4c' : '#04d772' }}>{selectedFlow.risk_score}%</strong>
+                      Productivity Score: <strong style={{ color: selectedFlow.risk_score > 50 ? '#ff4c4c' : '#04d772' }}>{selectedFlow.risk_score}%</strong>
                     </span>
                   </div>
                 </div>

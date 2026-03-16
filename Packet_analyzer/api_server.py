@@ -114,7 +114,7 @@ except Exception as e:
 def log_debug(msg):
     try:
         log_path = os.path.join(os.getcwd(), "debug.log")
-        with open(log_path, "a", encoding="utf-8", errors="replace") as f:
+        with open(log_path, "a", encoding="utf-8", errors="ignore") as f:
             f.write(f"{time.strftime('%H:%M:%S')}: {str(msg)}\n")
     except Exception as e:
         print(f"Logging error: {e}")
@@ -130,16 +130,14 @@ def safe_remove(file_path):
             time.sleep(0.5)
 
 def get_val(l, label):
-    """Robust extractor for boxed C++ output"""
+    """Robust extractor that ignores box characters and mangled encoding"""
     if label in l:
         try:
-            clean = l.replace('║', '').replace('╔', '').replace('╠', '').replace('╚', '').replace('═', '')
-            parts = clean.split(':')
-            if len(parts) >= 2:
-                val_part = parts[1].strip()
-                match = re.search(r'\d+', val_part)
-                if match:
-                    return int(match.group())
+            # Match the label and any digits that follow later on the same line
+            # This ignores box characters like ║, ╔, or mangled Γòæ
+            match = re.search(f"{re.escape(label)}.*?(\d+)", l)
+            if match:
+                return int(match.group(1))
         except: pass
     return None
 
@@ -159,11 +157,15 @@ def parse_dpi_output(dpi_output):
 
             # Extract Global Stats
             tp = get_val(line, "Total Packets:")
-            if tp is not None: engine_state["total_packets"] += tp
+            if tp is not None:
+                engine_state["total_packets"] += int(tp)
+                if int(tp) > 0: log_debug(f"Parsed {tp} packets from engine")
+            
             fw = get_val(line, "Forwarded:")
-            if fw is not None: engine_state["forwarded_packets"] += fw
+            if fw is not None: engine_state["forwarded_packets"] += int(fw)
+            
             dp = get_val(line, "Dropped:")
-            if dp is not None: engine_state["dropped_packets"] += dp
+            if dp is not None: engine_state["dropped_packets"] += int(dp)
 
             # Manage Sections
             if "[Detected Domains/SNIs]" in line:
@@ -232,12 +234,13 @@ def parse_dpi_output(dpi_output):
                             
                             # Hackathon Demo logic
                             if "cryptguard.threat.demo" in dom.lower():
-                                domains[dom].update({"risk_score": 100.0, "prediction": "Malicious", "category": "MALWARE (THREAT)"})
+                                domains[dom].update({"risk_score": 100.0, "prediction": "Malicious", "category": "MALWARE (THREAT)", "beacon_detected": True})
                             else:
                                 prob = xgb_model.predict_proba(df)[0][1]
-                                domains[dom]["risk_score"] = round(float(prob) * 100, 2)
-                                domains[dom]["prediction"] = "Malicious" if prob > 0.5 else "Benign"
-                                if prob > 0.5: domains[dom].update({"category": "SUSPICIOUS"})
+                                domains[dom]["risk_score"] = float(round(float(prob) * 100, 2))
+                                domains[dom]["prediction"] = "Malicious" if float(prob) > 0.5 else "Benign"
+                                domains[dom]["beacon_detected"] = bool(float(prob) > 0.5)
+                                if float(prob) > 0.5: domains[dom].update({"category": "SUSPICIOUS"})
                         except: pass
                 except: pass
 
@@ -340,7 +343,8 @@ class APIHandler(BaseHTTPRequestHandler):
                     sorted_domains = [
                         { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
                           "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
-                          "prediction": v.get("prediction", "Benign"), "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
+                          "prediction": v.get("prediction", "Benign"), "beacon_detected": v.get("beacon_detected", False),
+                          "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
                         for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
                     ][:50]
                     res = { "domains": sorted_domains, "total_packets": engine_state["total_packets"],
