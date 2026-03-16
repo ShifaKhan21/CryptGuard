@@ -181,7 +181,6 @@ def parse_dpi_output(dpi_output):
                     parts = line.split(" - ")[1].split(" -> ")
                     dom = parts[0].strip()
                     cat = parts[1].strip() if len(parts) > 1 else "Unknown"
-                    if dom.lower() == LOCAL_HOSTNAME.lower(): dom = f"Local PC ({LOCAL_HOSTNAME})"
                     
                     if dom not in domains:
                         domains[dom] = {"count": 0, "category": cat, "last_seen": now}
