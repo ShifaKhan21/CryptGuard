@@ -187,6 +187,7 @@ def parse_dpi_output(dpi_output):
                         domains[dom] = {"count": 0, "category": cat, "last_seen": now}
                     domains[dom]["count"] += 1
                     domains[dom]["last_seen"] = now
+                    if "ja3" not in domains[dom]: domains[dom]["ja3"] = "N/A"
                 except: pass
 
             # Parsing ML Features
@@ -201,6 +202,10 @@ def parse_dpi_output(dpi_output):
                         if p.startswith("PORT:"):
                             try: src_port = int(p.split(":")[1].strip())
                             except: pass
+                        if p.startswith("JA3:"):
+                            ja3_val = p.split(":")[1].strip()
+                            if ja3_val and ja3_val != "none":
+                                domains[dom]["ja3"] = ja3_val
                         if p.startswith("STATS:"):
                             stats_part = p[6:]
                     

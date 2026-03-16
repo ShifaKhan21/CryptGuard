@@ -7,6 +7,7 @@ function App() {
   const [interfaces, setInterfaces] = useState([]);
   const [selectedInterface, setSelectedInterface] = useState('');
   const [isCapturing, setIsCapturing] = useState(false);
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'light');
   
   const [stats, setStats] = useState({
     domains: [],
@@ -21,23 +22,25 @@ function App() {
   const [error, setError] = useState(null);
   const pollInterval = useRef(null);
 
-  // Fetch interfaces on mount
+  useEffect(() => {
+    document.body.className = theme === 'light' ? 'light-theme' : '';
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
   useEffect(() => {
     fetchInterfaces();
   }, []);
 
-  // Poll for stats when capturing
   useEffect(() => {
     if (isCapturing) {
       pollInterval.current = setInterval(fetchStats, 2000);
     } else {
       if (pollInterval.current) clearInterval(pollInterval.current);
     }
-    
-    return () => {
-      if (pollInterval.current) clearInterval(pollInterval.current);
-    };
+    return () => { if (pollInterval.current) clearInterval(pollInterval.current); };
   }, [isCapturing]);
+
+  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
   const fetchInterfaces = async () => {
     try {
@@ -47,14 +50,11 @@ function App() {
       if (data.is_capturing) {
         setIsCapturing(true);
         setSelectedInterface(data.selected);
-      } else if (data.interfaces && data.interfaces.length > 0) {
-        // Auto-select first interface implicitly
+      } else if (data.interfaces?.length > 0) {
         setSelectedInterface('1'); 
       }
-      setError(null);
     } catch (err) {
-      setError("Failed to connect to DPI API Server. Is it running on port 8081?");
-      console.error(err);
+      setError("DPI API Offline. Connect to explorer.");
     }
   };
 
@@ -63,51 +63,31 @@ function App() {
       const res = await fetch(`${API_BASE_URL}/stats`);
       const data = await res.json();
       setStats(data);
-      setError(null);
-    } catch (err) {
-      console.error("Error fetching stats:", err);
-    }
+    } catch (err) { console.error(err); }
   };
 
   const handleStartCapture = async () => {
     if (!selectedInterface) return;
-    
     try {
       await fetch(`${API_BASE_URL}/start`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ interface_idx: parseInt(selectedInterface) })
       });
       setIsCapturing(true);
-      setError(null);
-      // Immediately fetch stats
       fetchStats();
-    } catch (err) {
-      setError("Failed to start capture");
-      console.error(err);
-    }
+    } catch (err) { setError("Capture failed."); }
   };
 
   const handleStopCapture = async () => {
     try {
-      await fetch(`${API_BASE_URL}/stop`, {
-        method: 'POST'
-      });
+      await fetch(`${API_BASE_URL}/stop`, { method: 'POST' });
       setIsCapturing(false);
-      setError(null);
-    } catch (err) {
-      setError("Failed to stop capture");
-      console.error(err);
-    }
+    } catch (err) { setError("Shutdown failed."); }
   };
 
   const handleBlockProcess = async (pid, processName) => {
-    if (!window.confirm(`Are you sure you want to terminate process "${processName}" (PID: ${pid})? This will stop the network threat.`)) {
-      return;
-    }
-    
+    if (!window.confirm(`Terminate ${processName} (PID: ${pid})?`)) return;
     try {
       const res = await fetch(`${API_BASE_URL}/block`, {
         method: 'POST',
@@ -115,15 +95,9 @@ function App() {
         body: JSON.stringify({ pid })
       });
       const data = await res.json();
-      if (data.status === "success") {
-        alert(`Successfully terminated ${processName}.`);
-        fetchStats();
-      } else {
-        alert(`Failed to block process: ${data.message || 'Unknown error'}`);
-      }
-    } catch (err) {
-      alert(`Error blocking process: ${err.message}`);
-    }
+      if (data.status === "success") fetchStats();
+      else alert(data.message);
+    } catch (err) { alert(err.message); }
   };
 
   return (
@@ -131,242 +105,141 @@ function App() {
       <header>
         <div className="brand">
           <div className="logo-icon">CG</div>
-          <h1>CryptGuard DPI</h1>
+          <h1>CryptGuard</h1>
         </div>
         
-        <div className="status-badge">
-          <div className={`status-dot ${!isCapturing ? 'inactive' : ''}`}></div>
-          {isCapturing ? 'Monitoring Live Traffic' : 'System Idle'}
+        <div className="header-actions">
+           <button className="theme-toggle" onClick={toggleTheme}>
+             {theme === 'dark' ? '☀️' : '🌙'}
+           </button>
+           <div className="status-badge">
+             <div className={`status-dot ${!isCapturing ? 'inactive' : ''}`}></div>
+             {isCapturing ? 'Monitoring' : 'Idle'}
+           </div>
         </div>
       </header>
 
-      {error && (
-        <div style={{ background: 'rgba(255, 76, 76, 0.1)', color: '#ff4c4c', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid rgba(255, 76, 76, 0.3)' }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="glass-panel" style={{ color: 'var(--danger)', marginBottom: '1rem', padding: '0.75rem' }}>⚠️ {error}</div>}
 
-      <section className="glass-panel controls-section">
-        <div className="control-group">
-          <label htmlFor="interface-select">Network Interface</label>
-          <select 
-            id="interface-select" 
-            value={selectedInterface} 
-            onChange={(e) => setSelectedInterface(e.target.value)}
-            disabled={isCapturing}
-          >
-            <option value="" disabled>Select an interface...</option>
-            {interfaces.map((iface, idx) => (
-               <option key={idx} value={idx + 1}>{iface}</option>
-            ))}
-          </select>
-        </div>
-        
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {!isCapturing ? (
-            <button 
-              className="btn-primary" 
-              onClick={handleStartCapture}
-              disabled={!selectedInterface}
-            >
-              Start Inspection
-            </button>
-          ) : (
-            <button 
-              className="btn-danger" 
-              onClick={handleStopCapture}
-            >
-              Stop Capture
-            </button>
-          )}
-        </div>
-      </section>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
+        <section className="glass-panel" style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <div className="control-group" style={{ flex: 1 }}>
+            <label>Interface</label>
+            <select value={selectedInterface} onChange={(e) => setSelectedInterface(e.target.value)} disabled={isCapturing} style={{ width: '100%' }}>
+              <option value="" disabled>Select adapter...</option>
+              {interfaces.map((iface, idx) => <option key={idx} value={idx + 1}>{iface}</option>)}
+            </select>
+          </div>
+          <button className={isCapturing ? "btn-danger" : "btn-primary"} onClick={isCapturing ? handleStopCapture : handleStartCapture} disabled={!selectedInterface}>
+            {isCapturing ? 'Stop' : 'Start'}
+          </button>
+        </section>
 
-      <div className="stats-grid">
-        <div className="glass-panel stat-card">
-          <div className="stat-value">{stats.total_packets.toLocaleString()}</div>
-          <div className="stat-label">Total Packets Inspected</div>
-        </div>
-        <div className="glass-panel stat-card">
-           <div className="stat-value" style={{ color: '#ff4c4c' }}>{stats.dropped_packets.toLocaleString()}</div>
-           <div className="stat-label">Packets Blocked/Dropped</div>
-        </div>
-        <div className="glass-panel stat-card">
-           <div className="stat-value" style={{ color: 'var(--secondary-color)' }}>{stats.forwarded_packets.toLocaleString()}</div>
-           <div className="stat-label">Packets Forwarded</div>
+        <div className="stats-grid" style={{ gridTemplateColumns: '1fr 1fr', marginBottom: 0 }}>
+          <div className="glass-panel stat-card">
+            <span className="stat-label">Packets</span>
+            <span className="stat-value">{stats.total_packets.toLocaleString()}</span>
+          </div>
+          <div className="glass-panel stat-card">
+             <span className="stat-label">Blocks</span>
+             <span className="stat-value" style={{ color: 'var(--danger)' }}>{stats.dropped_packets.toLocaleString()}</span>
+          </div>
         </div>
       </div>
 
       <section className="glass-panel scoreboard-container">
         <div className="scoreboard-header">
-          <h2>Top Real-Time Destinations</h2>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Inspected via ML DPI Engine
-          </span>
+          <h2>Network Traffic Monitor</h2>
         </div>
 
-        {stats.domains.length === 0 ? (
-           <div className="empty-state">
-             {isCapturing ? (
-               <>
-                 <div className="status-dot" style={{ margin: '0 auto 1rem', width: '12px', height: '12px' }}></div>
-                 <p>Analyzing Live Traffic... Visit a website to begin extraction.</p>
-               </>
-             ) : (
-               <p>No traffic data available. Select an interface and start inspection.</p>
-             )}
-           </div>
-        ) : (
-           <table>
-            <thead>
-              <tr>
-                <th>Official Destination</th>
-                <th>Service (PID)</th>
-                <th>Category</th>
-                <th>Productivity Score</th>
-                <th>AI Verdict</th>
-                <th style={{ textAlign: 'right' }}>Hits</th>
-                <th style={{ textAlign: 'center' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.domains
-                .filter(item => !item.domain.includes('Local PC'))
-                .map((item, index) => (
-                <tr key={index}>
-                  <td className="domain-cell">
-                    <div className="domain-icon">{item.domain.charAt(0).toUpperCase()}</div>
-                    {item.domain}
-                  </td>
-                  <td className="process-cell">
-                    <div className="process-info">
-                      <span className="process-name">{item.process?.name || 'Searching...'}</span>
-                      <span className="process-pid">PID: {item.process?.pid || '-'}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span className="category-badge" style={{
-                      backgroundColor: item.category === 'Unacademy' ? 'rgba(4, 215, 114, 0.2)' : 
-                                      item.category === 'Netflix' ? 'rgba(229, 9, 20, 0.2)' :
-                                      item.category === 'Twitter/X' ? 'rgba(29, 161, 242, 0.2)' : 'rgba(255,255,255,0.1)'
-                    }}>
-                      {item.category}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="risk-meter-container">
-                      <div 
-                        className="risk-meter-fill" 
-                        style={{ 
-                          width: `${item.risk_score}%`,
-                          background: item.risk_score > 70 ? '#ff4c4c' : item.risk_score > 30 ? '#ffcc00' : '#04d772'
-                        }}
-                      />
-                      <span className="risk-value">{item.risk_score}%</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span className={`verdict-badge ${item.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>
-                      {item.prediction}
-                    </span>
-                    {item.beacon_detected && (
-                      <span className="verdict-badge malicious" style={{ display: 'block', marginTop: '4px', fontSize: '0.6rem' }}>
-                        BEACON DETECTED
-                      </span>
-                    )}
-                  </td>
-                  <td className="hits-cell" style={{ textAlign: 'right', fontWeight: 'bold' }}>
-                    {item.hits.toLocaleString()}
-                  </td>
-                  <td style={{ textAlign: 'center' }}>
-                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
-                      <button 
-                        className="btn-primary" 
-                        style={{ padding: '6px 10px', fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: '700' }}
-                        onClick={() => {
-                          setSelectedFlow(item);
-                          setShowModal(true);
-                        }}
-                        disabled={Object.keys(item.ml_features || {}).length === 0}
-                      >
-                        {Object.keys(item.ml_features || {}).length > 0 ? "Inspect" : "Scanning"}
-                      </button>
-                      
-                      {item.prediction === 'Malicious' && item.process?.pid > 0 && (
-                        <button 
-                          className="btn-danger" 
-                          style={{ padding: '6px 10px', fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: '700' }}
-                          onClick={() => handleBlockProcess(item.process.pid, item.process.name)}
-                        >
-                          Block
-                        </button>
-                      )}
-                    </div>
-                  </td>
+        <div className="table-wrapper">
+          {stats.domains.length === 0 ? (
+             <div className="empty-state" style={{ padding: '2rem' }}>
+               <p>{isCapturing ? 'Scanning flows...' : 'Select interface to begin.'}</p>
+             </div>
+          ) : (
+             <table>
+              <thead>
+                <tr>
+                  <th>Target</th>
+                  <th>Service</th>
+                  <th>Cat.</th>
+                  <th>Risk</th>
+                  <th>JA3</th>
+                  <th>AI Verdict</th>
+                  <th style={{ textAlign: 'right' }}>Hits</th>
+                  <th style={{ textAlign: 'center' }}>Action</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {stats.domains.filter(item => !item.domain.includes('Local PC')).map((item, index) => (
+                  <tr key={index}>
+                    <td className="domain-cell">
+                      <div className="domain-icon">{item.domain.charAt(0).toUpperCase()}</div>
+                      <strong>{item.domain}</strong>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontWeight: 600 }}>{item.process?.name || 'Unknown'}</span>
+                        <span style={{ fontSize: '0.65rem', opacity: 0.6 }}>PID: {item.process?.pid || '-'}</span>
+                      </div>
+                    </td>
+                    <td><span className="category-badge">{item.category}</span></td>
+                    <td>
+                      <div className="risk-meter-container">
+                        <div className="risk-meter-fill" style={{ width: `${item.risk_score}%`, background: item.risk_score > 70 ? 'var(--danger)' : '#f59e0b' }} />
+                      </div>
+                    </td>
+                    <td><code style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{item.ja3?.substring(0, 8) || 'N/A'}</code></td>
+                    <td>
+                      <span className={`verdict-badge ${item.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>{item.prediction}</span>
+                    </td>
+                    <td className="hits-cell" style={{ textAlign: 'right' }}>{item.hits}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
+                        <button className="btn-primary-table" onClick={() => { setSelectedFlow(item); setShowModal(true); }}>Inspect</button>
+                        {item.prediction === 'Malicious' && item.process?.pid > 0 && (
+                          <button className="btn-danger-table" onClick={() => handleBlockProcess(item.process.pid, item.process.name)}>Block</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </section>
 
       {showModal && selectedFlow && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-content glass-panel" style={{ maxWidth: '900px', width: '90%' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-                <div className="domain-icon" style={{ width: '48px', height: '48px', fontSize: '1.4rem' }}>
-                  {selectedFlow.domain.charAt(0).toUpperCase()}
-                </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div className="domain-icon" style={{ width: '40px', height: '40px', fontSize: '1.2rem' }}>{selectedFlow.domain.charAt(0).toUpperCase()}</div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: '1.4rem' }}>{selectedFlow.domain}</h2>
-                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '4px' }}>
-                    <span className={`verdict-badge ${selectedFlow.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>
-                      {selectedFlow.prediction}
-                    </span>
-                    <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                      Productivity Score: <strong style={{ color: selectedFlow.risk_score > 50 ? '#ff4c4c' : '#04d772' }}>{selectedFlow.risk_score}%</strong>
-                    </span>
-                  </div>
+                  <h2 style={{ margin: 0 }}>{selectedFlow.domain}</h2>
+                  <span className={`verdict-badge ${selectedFlow.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>{selectedFlow.prediction}</span>
                 </div>
               </div>
-              <button className="close-btn" onClick={() => setShowModal(false)}>&times;</button>
+              <button className="theme-toggle" onClick={() => setShowModal(false)}>&times;</button>
             </div>
-            <div className="modal-body" style={{ maxHeight: '70vh', padding: '20px' }}>
-              <div className="features-grid">
-                {Object.entries(selectedFlow.ml_features || {}).map(([key, value]) => (
-                  <div key={key} className="feature-item" style={{ 
-                    background: 'rgba(255,255,255,0.03)', 
-                    border: '1px solid rgba(255,255,255,0.05)',
-                    padding: '12px',
-                    borderRadius: '8px'
-                  }}>
-                    <div className="feature-key" style={{ 
-                      fontSize: '0.65rem', 
-                      textTransform: 'uppercase', 
-                      letterSpacing: '0.5px',
-                      color: 'var(--secondary-color)',
-                      marginBottom: '4px'
-                    }}>
-                      {key}
-                    </div>
-                    <div className="feature-value" style={{ 
-                      fontSize: '1.1rem', 
-                      fontWeight: '700',
-                      fontFamily: '"JetBrains Mono", monospace'
-                    }}>
-                      {typeof value === 'number' ? 
-                        (key.toLowerCase().includes('iat') || key.toLowerCase().includes('duration') || key.toLowerCase().includes('std') || key.toLowerCase().includes('mean') ? 
-                          value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 6 }) : 
-                          value.toLocaleString()) 
-                        : value}
-                    </div>
-                  </div>
-                ))}
+            
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem' }}>TLS Fingerprint</label>
+              <div style={{ padding: '0.75rem', background: 'var(--input-bg)', borderRadius: '6px', fontSize: '0.9rem' }}>
+                <code>{selectedFlow.ja3 || 'No TLS captured'}</code>
               </div>
             </div>
-            <div className="modal-footer" style={{ padding: '15px', borderTop: '1px solid rgba(255,255,255,0.1)', textAlign: 'center' }}>
-                <span style={{ fontSize: '0.75rem', opacity: 0.5 }}>All features extracted in real-time via CryptGuard DPI Multi-Threaded Engine</span>
+
+            <label style={{ display: 'block', marginBottom: '0.5rem' }}>Extracted Features</label>
+            <div className="features-grid" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+              {Object.entries(selectedFlow.ml_features || {}).map(([key, value]) => (
+                <div key={key} className="feature-item">
+                  <div className="feature-key">{key}</div>
+                  <div className="feature-value">{typeof value === 'number' ? value.toFixed(4) : value}</div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

@@ -117,6 +117,19 @@ enum class AppType {
     DROPBOX,
     CLOUDFLARE,
     UNACADEMY,
+    // Infrastructure & Management Protocols
+    SSH,
+    FTP,
+    SMTP,
+    POP3,
+    IMAP,
+    ICMP,
+    RDP,
+    NTP,
+    DHCP,
+    SNMP,
+    BITTORRENT,
+    IPV6_ICMP,
     // Add more as needed
     APP_COUNT  // Keep this last for counting
 };
@@ -153,6 +166,7 @@ struct Connection {
     ConnectionState state = ConnectionState::NEW;
     AppType app_type = AppType::UNKNOWN;
     std::string sni;  // Server Name Indication (if detected)
+    std::string ja3_fingerprint;  // TLS JA3 Fingerprint (MD5 hash)
     
     uint64_t packets_in = 0;
     uint64_t packets_out = 0;

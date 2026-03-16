@@ -46,17 +46,25 @@ namespace DPI {
 class SNIExtractor {
 public:
     // Extract SNI from a TLS Client Hello packet
-    // payload should point to the start of TCP payload (after TCP header)
     static std::optional<std::string> extract(const uint8_t* payload, size_t length);
     
+    // Extract JA3 fingerprint from a TLS Client Hello packet
+    static std::optional<std::string> extractJA3(const uint8_t* payload, size_t length);
+
     // Check if this looks like a TLS Client Hello
     static bool isTLSClientHello(const uint8_t* payload, size_t length);
-    
-    // Extract all extensions (for debugging/logging)
-    static std::vector<std::pair<uint16_t, std::string>> extractExtensions(
-        const uint8_t* payload, size_t length);
 
 private:
+    // Helper to extract JA3 components
+    struct JA3Data {
+        uint16_t version;
+        std::vector<uint16_t> ciphers;
+        std::vector<uint16_t> extensions;
+        std::vector<uint16_t> elliptic_curves;
+        std::vector<uint8_t> elliptic_curve_formats;
+        
+        std::string toString() const;
+    };
     // TLS Constants
     static constexpr uint8_t CONTENT_TYPE_HANDSHAKE = 0x16;
     static constexpr uint8_t HANDSHAKE_CLIENT_HELLO = 0x01;

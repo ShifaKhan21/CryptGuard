@@ -1,6 +1,9 @@
 #include "sni_extractor.h"
+#include "md5.h"
 #include <cstring>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 namespace DPI {
 
@@ -126,15 +129,99 @@ std::optional<std::string> SNIExtractor::extract(const uint8_t* payload, size_t 
     return std::nullopt;
 }
 
-std::vector<std::pair<uint16_t, std::string>> SNIExtractor::extractExtensions(
-    const uint8_t* payload, size_t length) {
+std::string SNIExtractor::JA3Data::toString() const {
+    std::ostringstream ss;
+    ss << version << ",";
     
-    std::vector<std::pair<uint16_t, std::string>> extensions;
+    for (size_t i = 0; i < ciphers.size(); ++i) {
+        ss << ciphers[i] << (i == ciphers.size() - 1 ? "" : "-");
+    }
+    ss << ",";
     
-    // Similar parsing logic as extract(), but collect all extensions
-    // ... (abbreviated for brevity)
+    for (size_t i = 0; i < extensions.size(); ++i) {
+        ss << extensions[i] << (i == extensions.size() - 1 ? "" : "-");
+    }
+    ss << ",";
     
-    return extensions;
+    for (size_t i = 0; i < elliptic_curves.size(); ++i) {
+        ss << elliptic_curves[i] << (i == elliptic_curves.size() - 1 ? "" : "-");
+    }
+    ss << ",";
+    
+    for (size_t i = 0; i < elliptic_curve_formats.size(); ++i) {
+        ss << static_cast<int>(elliptic_curve_formats[i]) << (i == elliptic_curve_formats.size() - 1 ? "" : "-");
+    }
+    
+    return ss.str();
+}
+
+std::optional<std::string> SNIExtractor::extractJA3(const uint8_t* payload, size_t length) {
+    if (!isTLSClientHello(payload, length)) return std::nullopt;
+    
+    JA3Data ja3;
+    size_t offset = 5; // Skip Record Header
+    
+    // Handshake Layer
+    // type (1), len (3), version (2)
+    ja3.version = readUint16BE(payload + offset + 4);
+    offset += 6 + 32; // Skip type, len, version, random
+    
+    // Session ID
+    if (offset >= length) return std::nullopt;
+    uint8_t session_id_len = payload[offset];
+    offset += 1 + session_id_len;
+    
+    // Ciphers
+    if (offset + 2 > length) return std::nullopt;
+    uint16_t ciphers_len = readUint16BE(payload + offset);
+    offset += 2;
+    for (size_t i = 0; i < ciphers_len; i += 2) {
+        if (offset + 2 > length) break;
+        ja3.ciphers.push_back(readUint16BE(payload + offset));
+        offset += 2;
+    }
+    
+    // Compression
+    if (offset >= length) return std::nullopt;
+    uint8_t comp_len = payload[offset];
+    offset += 1 + comp_len;
+    
+    // Extensions
+    if (offset + 2 > length) return std::nullopt;
+    uint16_t ext_total_len = readUint16BE(payload + offset);
+    offset += 2;
+    
+    size_t ext_end = offset + ext_total_len;
+    while (offset + 4 <= ext_end && offset + 4 <= length) {
+        uint16_t type = readUint16BE(payload + offset);
+        uint16_t len = readUint16BE(payload + offset + 2);
+        offset += 4;
+        
+        ja3.extensions.push_back(type);
+        
+        if (type == 0x000a) { // Supported Groups (Elliptic Curves)
+            if (offset + 2 <= length) {
+                uint16_t list_len = readUint16BE(payload + offset);
+                for (size_t j = 0; j < list_len; j += 2) {
+                    if (offset + 2 + j + 2 <= length)
+                        ja3.elliptic_curves.push_back(readUint16BE(payload + offset + 2 + j));
+                }
+            }
+        } else if (type == 0x000b) { // EC Point Formats
+            if (offset + 1 <= length) {
+                uint8_t list_len = payload[offset];
+                for (size_t j = 0; j < list_len; ++j) {
+                    if (offset + 1 + j < length)
+                        ja3.elliptic_curve_formats.push_back(payload[offset + 1 + j]);
+                }
+            }
+        }
+        
+        offset += len;
+    }
+    
+    std::string ja3_str = ja3.toString();
+    return MD5::hash(ja3_str);
 }
 
 // ============================================================================

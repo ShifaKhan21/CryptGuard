@@ -98,6 +98,7 @@ struct FlowEntry {
     FiveTuple tuple;
     AppType app_type = AppType::UNKNOWN;
     std::string sni;
+    std::string ja3_fingerprint;
     uint64_t packets = 0;
     uint64_t bytes = 0;
     bool blocked = false;
@@ -266,7 +267,7 @@ public:
             uint64_t tot_pkts = flow.ml.fwd_packets + flow.ml.bwd_packets;
             uint64_t tot_bytes = flow.ml.fwd_bytes + flow.ml.bwd_bytes;
 
-            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|PORT:" << tuple.src_port << "|STATS:";
+            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|PORT:" << tuple.src_port << "|JA3:" << (flow.ja3_fingerprint.empty() ? "none" : flow.ja3_fingerprint) << "|STATS:";
             std::cout << "Flow Duration:" << duration << ",";
             std::cout << "Total Fwd Packets:" << flow.ml.fwd_packets << ",";
             std::cout << "Total Backward Packets:" << flow.ml.bwd_packets << ",";
@@ -451,6 +452,13 @@ private:
             if (sni) {
                 flow.sni = *sni;
                 flow.app_type = sniToAppType(*sni);
+                
+                // Also extract JA3 if it's a TLS Client Hello
+                auto ja3 = SNIExtractor::extractJA3(payload, pkt.payload_length);
+                if (ja3) {
+                    flow.ja3_fingerprint = *ja3;
+                }
+                
                 flow.classified = true;
                 return;
             }
