@@ -17,25 +17,54 @@ function App() {
   const [expandedRows, setExpandedRows] = useState({});
 
   const [error, setError] = useState(null);
-  const pollInterval = useRef(null);
+  const ws = useRef(null);
 
   // Fetch interfaces on mount
   useEffect(() => {
     fetchInterfaces();
+    return () => {
+      if (ws.current) ws.current.close();
+    };
   }, []);
 
-  // Poll for stats when capturing
+  // WebSocket connection when capturing
   useEffect(() => {
     if (isCapturing) {
-      pollInterval.current = setInterval(fetchStats, 500);
+      connectWebSocket();
     } else {
-      if (pollInterval.current) clearInterval(pollInterval.current);
+      if (ws.current) ws.current.close();
     }
     
     return () => {
-      if (pollInterval.current) clearInterval(pollInterval.current);
+      if (ws.current) ws.current.close();
     };
   }, [isCapturing]);
+
+  const connectWebSocket = () => {
+    if (ws.current) ws.current.close();
+    
+    const wsUrl = API_BASE_URL.replace('http', 'ws').replace('/api', '/ws/stats');
+    ws.current = new WebSocket(wsUrl);
+    
+    ws.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setStats(prev => ({
+        ...prev,
+        total_packets: data.total_packets,
+        forwarded_packets: data.forwarded,
+        dropped_packets: data.dropped,
+        domains: data.top_destinations
+      }));
+    };
+    
+    ws.current.onerror = (err) => {
+      console.error("WebSocket error:", err);
+    };
+    
+    ws.current.onclose = () => {
+      console.log("WebSocket connection closed");
+    };
+  };
 
   const fetchInterfaces = async () => {
     try {
@@ -51,7 +80,7 @@ function App() {
       }
       setError(null);
     } catch (err) {
-      setError("Failed to connect to DPI API Server. Is it running on port 8080?");
+      setError("Failed to connect to DPI API Server. Is it running on port 8081?");
       console.error(err);
     }
   };

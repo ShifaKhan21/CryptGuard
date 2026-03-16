@@ -411,12 +411,16 @@ public:
     void blockApp(const std::string& app) { rules_.blockApp(app); }
     void blockDomain(const std::string& dom) { rules_.blockDomain(dom); }
     
-    bool process(const std::string& input_file, const std::string& output_file) {
+    bool process(const std::string& input_file, const std::string& output_file, bool live_mode = false) {
         // Open input
         PcapReader reader;
-        if (!reader.open(input_file)) return false;
+        if (live_mode) {
+             if (!reader.openLive(input_file)) return false;
+        } else {
+             if (!reader.open(input_file)) return false;
+        }
         
-        // Open output
+        // Open output (optional in live mode, but we'll keep it for now)
         std::ofstream output(output_file, std::ios::binary);
         if (!output.is_open()) {
             std::cerr << "Cannot open output file\n";
@@ -448,14 +452,32 @@ public:
                 output.write(reinterpret_cast<const char*>(pkt_opt->data.data()), pkt_opt->data.size());
             }
         });
+
+        // Start stats reporter thread (for real-time JSON output)
+        std::atomic<bool> stats_running{true};
+        std::thread stats_thread([&]() {
+            while (stats_running) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                emitJSONStats();
+            }
+        });
         
         // Read and dispatch packets
-        std::cout << "[Reader] Processing packets...\n";
+        if (live_mode) std::cout << "[Reader] Capturing live traffic...\n";
+        else std::cout << "[Reader] Processing packets...\n";
+        
         RawPacket raw;
         ParsedPacket parsed;
         uint32_t pkt_id = 0;
         
-        while (reader.readNextPacket(raw)) {
+        while (reader.readNextPacket(raw) || live_mode) {
+            if (raw.data.empty()) {
+                if (live_mode) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    continue;
+                } else break;
+            }
+
             if (!PacketParser::parse(raw, parsed)) continue;
             if (!parsed.has_ip || (!parsed.has_tcp && !parsed.has_udp)) continue;
             
@@ -514,6 +536,8 @@ public:
             FiveTupleHash hasher;
             size_t lb_idx = hasher(pkt.tuple) % lbs_.size();
             lbs_[lb_idx]->queue().push(std::move(pkt));
+            
+            raw.data.clear(); // Reset for next iteration
         }
         
         std::cout << "[Reader] Done reading " << pkt_id << " packets\n";
@@ -523,6 +547,9 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
         // Stop all threads
+        stats_running = false;
+        stats_thread.join();
+
         for (auto& lb : lbs_) lb->stop();
         for (auto& fp : fps_) fp->stop();
         
@@ -532,7 +559,7 @@ public:
         
         output.close();
         
-        // Print report
+        // Print final report
         printReport();
         
         return true;
@@ -546,6 +573,35 @@ private:
     std::vector<std::unique_ptr<FastPath>> fps_;
     std::vector<std::unique_ptr<LoadBalancer>> lbs_;
     
+    void emitJSONStats() {
+        std::lock_guard<std::mutex> lock(stats_.app_mutex);
+        
+        std::cout << "{\"type\":\"stats\", \"data\":{"
+                  << "\"total_packets\":" << stats_.total_packets.load() << ","
+                  << "\"packets_forwarded\":" << stats_.forwarded.load() << ","
+                  << "\"packets_dropped\":" << stats_.dropped.load() << ","
+                  << "\"top_destinations\":[";
+        
+        // Sort and limit top destinations/SNIs
+        std::vector<std::pair<std::string, AppType>> snis(stats_.detected_snis.begin(), stats_.detected_snis.end());
+        // (Just a simple list for now, ideally we'd track counts per domain)
+        int i = 0;
+        for (const auto& [sni, app] : snis) {
+            if (i > 0) std::cout << ",";
+            std::cout << "{\"domain\":\"" << sni << "\", \"hits\":1}"; // Hits fixed at 1 for simplicity in this draft
+            if (++i >= 10) break;
+        }
+        
+        std::cout << "], \"applications\":{";
+        i = 0;
+        for (const auto& [app, count] : stats_.app_counts) {
+            if (i > 0) std::cout << ",";
+            std::cout << "\"" << appTypeToString(app) << "\":" << count;
+            i++;
+        }
+        std::cout << "}}}" << std::endl;
+    }
+
     void printReport() {
         std::cout << "\n";
         std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
@@ -629,6 +685,7 @@ DPI Engine v2.0 - Multi-threaded Deep Packet Inspection
 Usage: )" << prog << R"( <input.pcap> <output.pcap> [options]
 
 Options:
+  --live                 Enable live capture (input.pcap becomes interface name)
   --block-ip <ip>        Block source IP
   --block-app <app>      Block application (YouTube, Facebook, etc.)
   --block-domain <dom>   Block domain (substring match)
@@ -636,11 +693,13 @@ Options:
   --fps <n>              FP threads per LB (default: 2)
 
 Example:
-  )" << prog << R"( capture.pcap filtered.pcap --block-app YouTube --block-ip 192.168.1.50
+  )" << prog << R"( capture.pcap filtered.pcap --block-app YouTube
+  )" << prog << R"( "Wi-Fi" live_out.pcap --live
 )";
 }
 
 int main(int argc, char* argv[]) {
+    std::cout << std::unitbuf;
     if (argc < 3) {
         printUsage(argv[0]);
         return 1;
@@ -650,11 +709,13 @@ int main(int argc, char* argv[]) {
     std::string output = argv[2];
     
     DPIEngine::Config cfg;
+    bool live_mode = false;
     std::vector<std::string> block_ips, block_apps, block_domains;
     
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--block-ip" && i + 1 < argc) block_ips.push_back(argv[++i]);
+        if (arg == "--live") live_mode = true;
+        else if (arg == "--block-ip" && i + 1 < argc) block_ips.push_back(argv[++i]);
         else if (arg == "--block-app" && i + 1 < argc) block_apps.push_back(argv[++i]);
         else if (arg == "--block-domain" && i + 1 < argc) block_domains.push_back(argv[++i]);
         else if (arg == "--lbs" && i + 1 < argc) cfg.num_lbs = std::stoi(argv[++i]);
@@ -667,7 +728,7 @@ int main(int argc, char* argv[]) {
     for (const auto& app : block_apps) engine.blockApp(app);
     for (const auto& dom : block_domains) engine.blockDomain(dom);
     
-    if (!engine.process(input, output)) {
+    if (!engine.process(input, output, live_mode)) {
         return 1;
     }
     

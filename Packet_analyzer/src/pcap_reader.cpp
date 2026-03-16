@@ -15,8 +15,28 @@ PcapReader::~PcapReader() {
 }
 
 bool PcapReader::open(const std::string& filename) {
-    // Close any previously opened file
+    // Close any previously opened file or live capture
     close();
+    
+    if (filename == "-") {
+        char errbuf[PCAP_ERRBUF_SIZE];
+        pcap_handle_ = pcap_open_offline("-", errbuf);
+        if (!pcap_handle_) {
+            std::cerr << "Error: Could not open stdin for pcap reading: " << errbuf << std::endl;
+            return false;
+        }
+        
+        // Populate global header for downstream classes (like PacketParser)
+        global_header_.magic_number = PCAP_MAGIC_NATIVE;
+        global_header_.version_major = 2;
+        global_header_.version_minor = 4;
+        global_header_.snaplen = 65535;
+        global_header_.network = pcap_datalink(pcap_handle_);
+        needs_byte_swap_ = false;
+        
+        std::cout << "Opened stdin for pcap streaming." << std::endl;
+        return true;
+    }
     
     // Open in binary mode - this is crucial for reading raw bytes
     file_.open(filename, std::ios::binary);
@@ -53,12 +73,32 @@ bool PcapReader::open(const std::string& filename) {
     }
     
     std::cout << "Opened PCAP file: " << filename << std::endl;
-    std::cout << "  Version: " << global_header_.version_major << "." 
-              << global_header_.version_minor << std::endl;
-    std::cout << "  Snaplen: " << global_header_.snaplen << " bytes" << std::endl;
-    std::cout << "  Link type: " << global_header_.network 
-              << (global_header_.network == 1 ? " (Ethernet)" : "") << std::endl;
+    return true;
+}
+
+bool PcapReader::openLive(const std::string& device_name) {
+    if (device_name == "-") {
+        return open("-");
+    }
     
+    close();
+    char errbuf[PCAP_ERRBUF_SIZE];
+    
+    pcap_handle_ = pcap_open_live(device_name.c_str(), 65535, 1, 1000, errbuf);
+    if (!pcap_handle_) {
+        std::cerr << "Error: Could not open live capture on " << device_name << ": " << errbuf << std::endl;
+        return false;
+    }
+    
+    // Fill global header with relevant values for the live capture LinkType
+    global_header_.magic_number = PCAP_MAGIC_NATIVE;
+    global_header_.version_major = 2;
+    global_header_.version_minor = 4;
+    global_header_.snaplen = 65535;
+    global_header_.network = pcap_datalink(pcap_handle_);
+    needs_byte_swap_ = false;
+    
+    std::cout << "Opened live capture on interface: " << device_name << std::endl;
     return true;
 }
 
@@ -66,10 +106,29 @@ void PcapReader::close() {
     if (file_.is_open()) {
         file_.close();
     }
+    if (pcap_handle_) {
+        pcap_close(pcap_handle_);
+        pcap_handle_ = nullptr;
+    }
     needs_byte_swap_ = false;
 }
 
 bool PcapReader::readNextPacket(RawPacket& packet) {
+    if (pcap_handle_) {
+        struct pcap_pkthdr* header;
+        const u_char* data;
+        int res = pcap_next_ex(pcap_handle_, &header, &data);
+        if (res <= 0) return false;
+        
+        packet.header.ts_sec = header->ts.tv_sec;
+        packet.header.ts_usec = header->ts.tv_usec;
+        packet.header.incl_len = header->caplen;
+        packet.header.orig_len = header->len;
+        
+        packet.data.assign(data, data + header->caplen);
+        return true;
+    }
+
     if (!file_.is_open()) {
         return false;
     }

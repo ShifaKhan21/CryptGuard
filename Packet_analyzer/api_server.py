@@ -7,9 +7,11 @@ import threading
 import platform
 import socket
 import pickle
-import pandas as pd
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
+import asyncio
+from typing import List, Dict, Optional
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 # Try loading XGBoost model
 ML_MODEL = None
@@ -28,10 +30,7 @@ except Exception as e:
 # Constants
 TSHARK_PATH = r"C:\Program Files\Wireshark\tshark.exe" if platform.system() == "Windows" else "tshark"
 DPI_ENGINE_PATH = "dpi_engine.exe" if platform.system() == "Windows" else "./dpi_engine"
-TEMP_PCAP = "api_temp_capture.pcap"
-TEMP_OUT = "api_temp_output.pcap"
-CAPTURE_DURATION = 1.0  # Reduced for faster detection (within 1-2 seconds)
-DECAY_TIMEOUT = 30 # Keep traffic visible for 30s for better dashboard experience
+DECAY_TIMEOUT = 30 
 
 # Global State
 LOCAL_HOSTNAME = socket.gethostname()
@@ -39,393 +38,273 @@ engine_state = {
     "interfaces": [],
     "selected_interface": None,
     "is_capturing": False,
-    "domains": {}, # Format: {domain: {"count": X, "category": Y, "last_seen": timestamp, "last_seen_time": str, "ml_prediction": str, "ml_confidence": str}}
+    "domains": {}, 
     "last_update": 0,
     "total_packets": 0,
     "dropped_packets": 0,
-    "forwarded_packets": 0
+    "forwarded_packets": 0,
+    "applications": {}
 }
 
 state_lock = threading.Lock()
-dns_cache = {}
-dns_queue = []
-dns_lock = threading.Lock()
+connected_clients: List[WebSocket] = []
 
-ip_to_domain_cache = {} # Persistent IP -> Domain mapping
+app = FastAPI()
 
-def dns_resolve_worker():
-    """Background thread to resolve IPs without stalling the main loop"""
-    while True:
-        ip = None
-        with dns_lock:
-            if dns_queue:
-                ip = dns_queue.pop(0)
-        
-        if ip:
-            if ip not in dns_cache:
-                try:
-                    host = socket.gethostbyaddr(ip)[0]
-                    if host:
-                        # Clean up names
-                        if host.lower() == LOCAL_HOSTNAME.lower():
-                            dns_cache[ip] = "Local PC (" + LOCAL_HOSTNAME + ")"
-                        else:
-                            parts = host.split('.')
-                            clean_domain = '.'.join(parts[-2:]) if len(parts) >= 2 else host
-                            dns_cache[ip] = clean_domain
-                except:
-                    dns_cache[ip] = None
-        else:
-            time.sleep(0.5)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Start DNS worker
-threading.Thread(target=dns_resolve_worker, daemon=True).start()
+class Broadcaster:
+    def __init__(self):
+        self.clients: List[WebSocket] = []
 
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.clients.append(websocket)
+        print(f"📡 New client connected. Total clients: {len(self.clients)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.clients:
+            self.clients.remove(websocket)
+            print(f"📡 Client disconnected. Total clients: {len(self.clients)}")
+
+    async def broadcast(self, message: str):
+        # Use a copy for safe iteration during removals
+        for client in self.clients[:]:
+            try:
+                await client.send_text(message)
+            except Exception as e:
+                # Silently remove stale clients
+                if client in self.clients:
+                    self.clients.remove(client)
+
+broadcaster = Broadcaster()
 
 def get_interfaces():
     try:
         cmd = [TSHARK_PATH, "-D"]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        interfaces = []
-        for line in result.stdout.strip().split("\n"):
-            line = line.strip()
-            if line:
-                interfaces.append(line)
-        return interfaces
+        return [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
     except Exception as e:
         print(f"Error fetching interfaces: {e}")
         return []
 
+@app.get("/api/interfaces")
+async def api_interfaces():
+    global engine_state
+    if not engine_state["interfaces"]:
+        engine_state["interfaces"] = get_interfaces()
+    return {
+        "interfaces": engine_state["interfaces"],
+        "selected": engine_state["selected_interface"],
+        "is_capturing": engine_state["is_capturing"]
+    }
 
-def log_debug(msg):
-    with open("debug.log", "a") as f:
-        f.write(f"{time.time()}: {msg}\n")
+@app.get("/api/stats")
+async def api_stats():
+    global engine_state
+    with state_lock:
+        sorted_domains = [
+            {
+                "domain": k, 
+                "category": v.get("category", "Unknown"), 
+                "hits": v.get("count", 0), 
+                "last_seen": v.get("last_seen", 0),
+                "last_seen_time": v.get("last_seen_time", "--:--:--"),
+                "ml_prediction": v.get("ml_prediction", "BENIGN"),
+                "ml_confidence": v.get("ml_confidence", "--")
+            }
+            for k, v in sorted(engine_state["domains"].items(), key=lambda item: (item[1].get("last_seen", 0), item[1].get("count", 0)), reverse=True)
+        ][:50]
+        
+        return {
+            "domains": sorted_domains,
+            "total_packets": engine_state["total_packets"],
+            "forwarded_packets": engine_state["forwarded_packets"],
+            "dropped_packets": engine_state["dropped_packets"],
+            "applications": engine_state["applications"],
+            "last_update": engine_state["last_update"]
+        }
 
-def run_ml_inference(pcap_file, features_csv, results_list):
-    """Parallel worker for ML inference"""
-    if not ML_MODEL or not EXPECTED_FEATURES:
-        return
+@app.post("/api/start")
+async def api_start(data: dict):
+    global engine_state
+    interface_idx = data.get('interface_idx')
+    if interface_idx is None:
+        return {"status": "error", "message": "Missing interface_idx"}
+    
+    if isinstance(interface_idx, str) and '. ' in interface_idx:
+        interface_idx = interface_idx.split('.')[0]
+        
+    with state_lock:
+        engine_state["selected_interface"] = str(interface_idx)
+        engine_state["is_capturing"] = True
+        engine_state["domains"] = {}
+        engine_state["total_packets"] = 0
+        engine_state["dropped_packets"] = 0
+        engine_state["forwarded_packets"] = 0
+        engine_state["applications"] = {}
+        
+    return {"status": "success", "message": "Capture started"}
 
+@app.post("/api/stop")
+async def api_stop():
+    global engine_state
+    engine_state["is_capturing"] = False
+    return {"status": "success", "message": "Capture stopped"}
+
+@app.websocket("/ws/stats")
+async def websocket_endpoint(websocket: WebSocket):
+    await broadcaster.connect(websocket)
     try:
-         # Run cicflowmeter
-         cf_cmd = [sys.executable, "-m", "cicflowmeter.sniffer", "-f", pcap_file, "-c", features_csv]
-         subprocess.run(cf_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-         
-         if os.path.exists(features_csv):
-             df = pd.read_csv(features_csv)
-             available_features = [col for col in EXPECTED_FEATURES if col in df.columns]
-             
-             if len(available_features) == len(EXPECTED_FEATURES):
-                 X_pred = df[EXPECTED_FEATURES]
-                 preds = ML_MODEL.predict(X_pred)
-                 probs = ML_MODEL.predict_proba(X_pred) if hasattr(ML_MODEL, "predict_proba") else []
-                 
-                 for idx, ((_, row), pred, prob) in enumerate(zip(df.iterrows(), preds, probs if len(probs) > 0 else [[0, 0]] * len(preds))):
-                     src_ip = row.get('Src IP')
-                     dst_ip = row.get('Dst IP')
-                     pred_class = "MALWARE" if pred == 1 else "BENIGN"
-                     confidence = round(float(prob.max() if hasattr(prob, 'max') else max(prob)) * 100, 1) if prob is not None else "--"
-                     
-                     raw_features = {feat: str(row.get(feat, "")) for feat in EXPECTED_FEATURES}
-                     
-                     results_list.append({
-                         "ip1": src_ip, 
-                         "ip2": dst_ip, 
-                         "class": pred_class, 
-                         "conf": confidence,
-                         "features": raw_features
-                     })
+        while True:
+            # Keep connection alive, though ping/pong is handled by FastAPI/Uvicorn
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        broadcaster.disconnect(websocket)
     except Exception as e:
-        log_debug(f"ML Parallel Error: {e}")
-    finally:
-        try:
-            if os.path.exists(features_csv): os.remove(features_csv)
-        except: pass
+        print(f"WebSocket Error: {e}")
+        broadcaster.disconnect(websocket)
 
-def run_dpi_capture_loop():
+async def dpi_engine_task():
+    """Background task to manage the DPI engine process asynchronously."""
     global engine_state
     
-    log_debug("DPI Capture loop started...")
-    
     while True:
+        interface = None
+        is_capturing = False
         with state_lock:
-            interface_idx = engine_state.get("selected_interface")
-            is_capturing = engine_state.get("is_capturing")
+            interface = engine_state["selected_interface"]
+            is_capturing = engine_state["is_capturing"]
             
-        if not is_capturing or interface_idx is None:
-            time.sleep(1)
+        if not is_capturing or interface is None:
+            await asyncio.sleep(1)
             continue
             
-        # 1. Capture traffic using tshark
+        print(f"🚀 [Senior] Starting Asynchronous DPI Pipeline on interface: {interface}")
+        
         try:
-            cmd = [TSHARK_PATH, "-i", str(interface_idx), "-a", f"duration:{CAPTURE_DURATION}", "-w", TEMP_PCAP, "-F", "pcap", "-q"]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        except Exception as e:
-            print(f"Error during packet capture: {e}")
-            time.sleep(1)
-            continue
-
-        if not os.path.exists(TEMP_PCAP):
-            cont        # 2. Parallel Processing: ML Inference & DPI Engine
-        flow_predictions = []
-        features_csv = f"live_features_{int(time.time())}.csv"
-        
-        ml_thread = threading.Thread(target=run_ml_inference, args=(TEMP_PCAP, features_csv, flow_predictions))
-        ml_thread.start()
-
-        dpi_output = ""
-        try:
-            cwd = os.getcwd().replace('\\', '/')
-            dpi_cmd = [
-                r"C:\msys64\usr\bin\bash.exe", "-lc",
-                f"cd '{cwd}' && export PATH=/mingw64/bin:$PATH && ./{DPI_ENGINE_PATH} {TEMP_PCAP} {TEMP_OUT}"
-            ]
-            result = subprocess.run(dpi_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
-            dpi_output = result.stdout
-        except Exception as e:
-            log_debug(f"DPI Engine Error: {e}")
-
-        # Wait for ML to finish (with short timeout to keep UI snappy)
-        ml_thread.join(timeout=2.0)
-
-        # 3. Parse and aggregate output
-        now = time.time()
-        now_time = time.strftime('%H:%M:%S', time.localtime(now))
-        with state_lock:
-            # PRUNING: Remove stale domains (not seen in DECAY_TIMEOUT seconds)
-            stale_keys = [k for k, v in engine_state["domains"].items() if now - v.get("last_seen", 0) > DECAY_TIMEOUT]
-            for k in stale_keys:
-                del engine_state["domains"][k]
+            cwd = os.getcwd()
+            null_device = "NUL" if platform.system() == "Windows" else "/dev/null"
             
-            # Parse packet stats
-            lines = dpi_output.split('\n')
-            sni_section = False
-            active_ip_section = False
-            
-            for line in lines:
-                line = line.replace("║", "").strip()
-                if not line: continue
-
-                if line.startswith("Total Packets:"):
-                     parts = line.split()
-                     if len(parts) >= 3:
-                         try: engine_state["total_packets"] += int(parts[2])
-                         except: pass
-                elif line.startswith("Forwarded:"):
-                     parts = line.split()
-                     if len(parts) >= 2:
-                         try: engine_state["forwarded_packets"] += int(parts[1])
-                         except: pass
-                elif line.startswith("Dropped:"):
-                     parts = line.split()
-                     if len(parts) >= 2:
-                         try: engine_state["dropped_packets"] += int(parts[1])
-                         except: pass
-                          
-                if "[Detected Domains/SNIs]" in line or "[Detected Applications/Domains]" in line:
-                    sni_section = True
-                    active_ip_section = False
-                    continue
-                
-                if "[Active Destination IPs]" in line:
-                    sni_section = False
-                    active_ip_section = True
-                    continue
-
-                if sni_section:
-                    if line.startswith("- "):
-                        parts = line[2:].split(" -> ")
-                        if len(parts) >= 2:
-                            domain = parts[0]
-                            category = parts[1]
-                            if domain.lower() == LOCAL_HOSTNAME.lower():
-                                domain = "Local PC (" + LOCAL_HOSTNAME + ")"
-
-                            if domain not in engine_state["domains"]:
-                                engine_state["domains"][domain] = {
-                                    "count": 0, "category": category, "last_seen": now, "last_seen_time": now_time, "ml_prediction": "BENIGN", "ml_confidence": "--", "extended_features": {}
-                                }
-                            engine_state["domains"][domain]["count"] += 1
-                            engine_state["domains"][domain]["last_seen"] = now
-                            engine_state["domains"][domain]["last_seen_time"] = now_time
-                    elif not line.startswith("║"):
-                        sni_section = False
-
-                if active_ip_section:
-                    if line.startswith("- IP: "):
-                        ip_addr = line[6:].strip()
-                        resolved = dns_cache.get(ip_addr) or ip_to_domain_cache.get(ip_addr)
-                        
-                        if resolved:
-                            if resolved not in engine_state["domains"]:
-                                engine_state["domains"][resolved] = {
-                                    "count": 0, "category": "Active Connection", "last_seen": now, "last_seen_time": now_time, "ml_prediction": "BENIGN", "ml_confidence": "--", "extended_features": {}
-                                }
-                            
-                            # Correlate flow predictions
-                            for f_pred in flow_predictions:
-                                 if ip_addr == f_pred['ip1'] or ip_addr == f_pred['ip2']:
-                                     engine_state["domains"][resolved]["extended_features"] = f_pred['features']
-                                     if f_pred['class'] == 'MALWARE':
-                                          engine_state["domains"][resolved]["ml_prediction"] = "MALWARE"
-                                          engine_state["domains"][resolved]["ml_confidence"] = f_pred['conf']
-                                          break
-                                     else:
-                                          if engine_state["domains"][resolved].get("ml_prediction") != "MALWARE":
-                                              engine_state["domains"][resolved]["ml_prediction"] = f_pred['class']
-                                              engine_state["domains"][resolved]["ml_confidence"] = f_pred['conf']
-                                              
-                            engine_state["domains"][resolved]["count"] += 1
-                            engine_state["domains"][resolved]["last_seen"] = now
-                            engine_state["domains"][resolved]["last_seen_time"] = now_time
-                            ip_to_domain_cache[ip_addr] = resolved
-                        else:
-                            # Add to resolution queue if unknown
-                            with dns_lock:
-                                if ip_addr not in dns_queue:
-                                    dns_queue.append(ip_addr)
-                                    
-                            # Fallback to IP as domain for visibility
-                            if ip_addr not in engine_state["domains"]:
-                                engine_state["domains"][ip_addr] = {
-                                    "count": 0, "category": "Active Connection (IP)", "last_seen": now, "last_seen_time": now_time, "ml_prediction": "BENIGN", "ml_confidence": "--", "extended_features": {}
-                                }
-                            engine_state["domains"][ip_addr]["count"] += 1
-                            engine_state["domains"][ip_addr]["last_seen"] = now
-                            engine_state["domains"][ip_addr]["last_seen_time"] = now_time
-                    elif not line.startswith("║"):
-                        active_ip_section = False
-
-            engine_state["last_update"] = now
-            
-        # Cleanup
-        except: pass
-
-    except Exception as e:
-            print(f"Error running DPI engine: {e}")
-
-
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """Handle requests in a separate thread."""
-    allow_reuse_address = True
-
-class APIHandler(BaseHTTPRequestHandler):
-    
-    def _set_headers(self, status_code=200):
-        self.send_response(status_code)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
-        
-    def do_OPTIONS(self):
-        self._set_headers(204)
-
-    def do_GET(self):
-        global engine_state
-        
-        if self.path == '/api/interfaces':
-            with state_lock:
-                if not engine_state["interfaces"]:
-                    engine_state["interfaces"] = get_interfaces()
-                
-                response = {
-                    "interfaces": engine_state["interfaces"],
-                    "selected": engine_state["selected_interface"],
-                    "is_capturing": engine_state["is_capturing"]
-                }
-            self._set_headers()
-            self.wfile.write(json.dumps(response).encode())
-            
-        elif self.path == '/api/stats':
-            with state_lock:
-                # Sort by last_seen (most recent first), then by hits
-                sorted_domains = [
-                    {
-                        "domain": k, 
-                        "category": v["category"], 
-                        "hits": v["count"], 
-                        "last_seen": v.get("last_seen", 0),
-                        "last_seen_time": v.get("last_seen_time", "--:--:--"),
-                        "ml_prediction": v.get("ml_prediction", "BENIGN"),
-                        "ml_confidence": v.get("ml_confidence", "--"),
-                        "extended_features": v.get("extended_features", {})
-                    }
-                    for k, v in sorted(engine_state["domains"].items(), key=lambda item: (item[1].get("last_seen", 0), item[1]["count"]), reverse=True)
-                ][:50]
-                
-                response = {
-                    "domains": sorted_domains,
-                    "total_packets": engine_state["total_packets"],
-                    "forwarded_packets": engine_state["forwarded_packets"],
-                    "dropped_packets": engine_state["dropped_packets"],
-                    "last_update": engine_state["last_update"]
-                }
-            self._set_headers()
-            self.wfile.write(json.dumps(response).encode())
-            
-        else:
-            self.send_error(404, "Not Found")
-
-    def do_POST(self):
-        global engine_state
-        
-        if self.path == '/api/start':
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
+            # Resolve full device name
+            device_name = interface
+            if not engine_state["interfaces"]:
+                engine_state["interfaces"] = get_interfaces()
             
             try:
-                data = json.loads(post_data.decode('utf-8'))
-                interface_idx = data.get('interface_idx')
-                
-                if interface_idx is None:
-                    self.send_error(400, "Missing interface_idx")
-                    return
-                if isinstance(interface_idx, str) and '. ' in interface_idx:
-                    interface_idx = interface_idx.split('.')[0]
-                    
-                with state_lock:
-                    engine_state["selected_interface"] = str(interface_idx)
-                    engine_state["is_capturing"] = True
-                    engine_state["domains"] = {}
-                    engine_state["total_packets"] = 0
-                    engine_state["dropped_packets"] = 0
-                    engine_state["forwarded_packets"] = 0
-                    
-                self._set_headers()
-                self.wfile.write(json.dumps({"status": "success", "message": "Capture started"}).encode())
-            except json.JSONDecodeError:
-                self.send_error(400, "Invalid JSON data")
-                
-        elif self.path == '/api/stop':
-             with state_lock:
-                 engine_state["is_capturing"] = False
-             self._set_headers()
-             self.wfile.write(json.dumps({"status": "success", "message": "Capture stopped"}).encode())
-        else:
-            self.send_error(404, "Not Found")
+                idx = int(interface)
+                if 0 < idx <= len(engine_state["interfaces"]):
+                    full_str = engine_state["interfaces"][idx - 1]
+                    parts = full_str.split(' ')
+                    for p in parts:
+                        if p.startswith('\\Device\\'):
+                            device_name = p
+                            break
+            except: pass
 
-def start_server():
-    server_address = ('', 8081)
-    httpd = ThreadedHTTPServer(server_address, APIHandler)
-    print(f"API Server listening on port 8081...")
-    
-    capture_thread = threading.Thread(target=run_dpi_capture_loop, daemon=True)
-    capture_thread.start()
-    
-    try:
-        httpd.serve_forever()
-    except Exception as e:
-        print(f'CRASH: {e}')
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print("Shutting down API server...")
-        httpd.server_close()
-        
-        if os.path.exists(TEMP_PCAP): os.remove(TEMP_PCAP)
-        if os.path.exists(TEMP_OUT): os.remove(TEMP_OUT)
+            # Resolve full device name
+            shell_cwd = cwd.replace('\\', '/')
+            tshark_bin = TSHARK_PATH.replace('\\', '/')
+            device_target = device_name
+            
+            # Format the bash command string carefully
+            # We use double quotes for the bash command to handle spaces in paths
+            bash_cmd = f"cd '{shell_cwd}' && export PATH=/mingw64/bin:$PATH && \"{tshark_bin}\" -i '{device_target}' -w - | ./{DPI_ENGINE_PATH} - {null_device} --live"
+            
+            print(f"📡 Pipeline Command (Bash): {bash_cmd}")
+            
+            process = await asyncio.create_subprocess_exec(
+                r"C:\msys64\usr\bin\bash.exe", "-lc",
+                bash_cmd,
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE
+            )
+
+            # Task to log stderr
+            async def log_stderr(stderr):
+                while True:
+                    line = await stderr.readline()
+                    if not line: break
+                    msg = line.decode('utf-8', errors='ignore').strip()
+                    if msg: print(f"DPI Engine Stderr: {msg}")
+            
+            stderr_task = asyncio.create_task(log_stderr(process.stderr))
+
+            # Read stdout
+            while True:
+                if not engine_state["is_capturing"]:
+                    process.terminate()
+                    break
+                
+                line_bytes = await process.stdout.readline()
+                if not line_bytes: break
+                
+                line = line_bytes.decode('utf-8', errors='ignore').strip()
+                if not line or not line.startswith('{"type":"stats"'): continue
+                
+                try:
+                    data = json.loads(line)
+                    stats = data.get("data", {})
+                    
+                    with state_lock:
+                        now = time.time()
+                        now_time = time.strftime('%H:%M:%S', time.localtime(now))
+                        engine_state["total_packets"] = stats.get("total_packets", 0)
+                        engine_state["forwarded_packets"] = stats.get("packets_forwarded", 0)
+                        engine_state["dropped_packets"] = stats.get("packets_dropped", 0)
+                        engine_state["applications"] = stats.get("applications", {})
+                        
+                        for dest in stats.get("top_destinations", []):
+                            dom = dest.get("domain")
+                            if dom:
+                                if dom not in engine_state["domains"]:
+                                    engine_state["domains"][dom] = {
+                                        "count": 0, "category": "Detected", "last_seen": now, 
+                                        "last_seen_time": now_time, "ml_prediction": "BENIGN", "ml_confidence": "--"
+                                    }
+                                engine_state["domains"][dom]["count"] += dest.get("hits", 1)
+                                engine_state["domains"][dom]["last_seen"] = now
+                                engine_state["domains"][dom]["last_seen_time"] = now_time
+                        
+                        engine_state["last_update"] = now
+                        
+                        # Prepare broadcast payload
+                        payload = json.dumps({
+                            "total_packets": engine_state["total_packets"],
+                            "forwarded": engine_state["forwarded_packets"],
+                            "dropped": engine_state["dropped_packets"],
+                            "applications": engine_state["applications"],
+                            "top_destinations": [
+                                {"domain": k, "hits": v["count"], "category": v["category"]} 
+                                for k, v in sorted(engine_state["domains"].items(), key=lambda x: x[1]["last_seen"], reverse=True)[:10]
+                            ]
+                        })
+                        
+                    # Broadcast to all clients (now in the same loop!)
+                    await broadcaster.broadcast(payload)
+                    
+                except Exception as e:
+                    print(f"Error parsing DPI output: {e}")
+
+            await process.wait()
+            stderr_task.cancel()
+            print("🛑 DPI Pipeline stopped.")
+            
+        except Exception as e:
+            print(f"DPI Task Error: {e}")
+            await asyncio.sleep(2)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(dpi_engine_task())
 
 if __name__ == "__main__":
-    start_server()
+    # Use uvicorn in a way that respects the main event loop
+    uvicorn.run(app, host="0.0.0.0", port=8081)
+

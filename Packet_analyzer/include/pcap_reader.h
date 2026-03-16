@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <pcap.h>
 
 namespace PacketAnalyzer {
 
@@ -35,7 +36,7 @@ struct RawPacket {
     std::vector<uint8_t> data;  // The actual packet bytes
 };
 
-// Class to read PCAP files
+// Class to read PCAP files or capture live traffic
 class PcapReader {
 public:
     PcapReader() = default;
@@ -44,7 +45,10 @@ public:
     // Open a pcap file for reading
     bool open(const std::string& filename);
     
-    // Close the file
+    // Open a live interface for capture
+    bool openLive(const std::string& device_name);
+    
+    // Close the file or live capture
     void close();
     
     // Read the next packet, returns false if no more packets
@@ -53,14 +57,18 @@ public:
     // Get the global header info
     const PcapGlobalHeader& getGlobalHeader() const { return global_header_; }
     
-    // Check if file is open
-    bool isOpen() const { return file_.is_open(); }
+    // Check if file or live capture is open
+    bool isOpen() const { return file_.is_open() || pcap_handle_ != nullptr; }
+    
+    // Check if it's a live capture
+    bool isLive() const { return pcap_handle_ != nullptr; }
     
     // Check if we need to swap byte order
     bool needsByteSwap() const { return needs_byte_swap_; }
 
 private:
     std::ifstream file_;
+    pcap_t* pcap_handle_ = nullptr;
     PcapGlobalHeader global_header_;
     bool needs_byte_swap_ = false;
     
