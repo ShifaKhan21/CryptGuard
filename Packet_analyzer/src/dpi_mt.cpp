@@ -160,9 +160,12 @@ private:
     std::vector<std::string> blocked_domains_;
 };
 
-// =============================================================================
-// Statistics (thread-safe)
-// =============================================================================
+struct DomainStats {
+    AppType app_type = AppType::UNKNOWN;
+    uint64_t hits = 0;
+    std::chrono::steady_clock::time_point last_seen;
+};
+
 struct Stats {
     std::atomic<uint64_t> total_packets{0};
     std::atomic<uint64_t> total_bytes{0};
@@ -174,14 +177,17 @@ struct Stats {
     // Per-app stats (protected by mutex)
     std::mutex app_mutex;
     std::unordered_map<AppType, uint64_t> app_counts;
-    std::unordered_map<std::string, AppType> detected_snis;
+    std::unordered_map<std::string, DomainStats> detected_snis;
     std::unordered_set<uint32_t> active_ips;
     
     void recordApp(AppType app, const std::string& sni) {
         std::lock_guard<std::mutex> lock(app_mutex);
         app_counts[app]++;
         if (!sni.empty()) {
-            detected_snis[sni] = app;
+            auto& s = detected_snis[sni];
+            s.app_type = app;
+            s.hits++;
+            s.last_seen = std::chrono::steady_clock::now();
         }
     }
 
@@ -379,17 +385,18 @@ public:
         int fps_per_lb = 2;
     };
     
-    DPIEngine(const Config& cfg) : config_(cfg) {
+    DPIEngine(const Config& cfg, bool live_mode = false) : config_(cfg) {
         int total_fps = cfg.num_lbs * cfg.fps_per_lb;
-        
-        std::cout << "\n";
-        std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
-        std::cout << "║              DPI ENGINE v2.0 (Multi-threaded)                 ║\n";
-        std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
-        std::cout << "║ Load Balancers: " << std::setw(2) << cfg.num_lbs 
-                  << "    FPs per LB: " << std::setw(2) << cfg.fps_per_lb
-                  << "    Total FPs: " << std::setw(2) << total_fps << "     ║\n";
-        std::cout << "╚══════════════════════════════════════════════════════════════╝\n\n";
+        if (!live_mode) {
+            std::cout << "\n";
+            std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
+            std::cout << "║              DPI ENGINE v2.0 (Multi-threaded)                 ║\n";
+            std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
+            std::cout << "║ Load Balancers: " << std::setw(2) << cfg.num_lbs 
+                      << "    FPs per LB: " << std::setw(2) << cfg.fps_per_lb
+                      << "    Total FPs: " << std::setw(2) << total_fps << "     ║\n";
+            std::cout << "╚══════════════════════════════════════════════════════════════╝\n\n";
+        }
         
         // Create FP threads
         for (int i = 0; i < total_fps; i++) {
@@ -463,7 +470,7 @@ public:
         });
         
         // Read and dispatch packets
-        if (live_mode) std::cout << "[Reader] Capturing live traffic...\n";
+        if (live_mode) std::cerr << "[Reader] Capturing live traffic...\n";
         else std::cout << "[Reader] Processing packets...\n";
         
         RawPacket raw;
@@ -582,14 +589,28 @@ private:
                   << "\"packets_dropped\":" << stats_.dropped.load() << ","
                   << "\"top_destinations\":[";
         
-        // Sort and limit top destinations/SNIs
-        std::vector<std::pair<std::string, AppType>> snis(stats_.detected_snis.begin(), stats_.detected_snis.end());
-        // (Just a simple list for now, ideally we'd track counts per domain)
+        // Sort and limit top destinations/SNIs by last_seen
+        struct SNIEntry {
+            std::string domain;
+            AppType app;
+            uint64_t hits;
+            std::chrono::steady_clock::time_point last_seen;
+        };
+        
+        std::vector<SNIEntry> snis;
+        for (const auto& [sni, stats] : stats_.detected_snis) {
+            snis.push_back({sni, stats.app_type, stats.hits, stats.last_seen});
+        }
+        
+        std::sort(snis.begin(), snis.end(), [](const SNIEntry& a, const SNIEntry& b) {
+            return a.last_seen > b.last_seen; // Most recent first
+        });
+        
         int i = 0;
-        for (const auto& [sni, app] : snis) {
+        for (const auto& entry : snis) {
             if (i > 0) std::cout << ",";
-            std::cout << "{\"domain\":\"" << sni << "\", \"hits\":1}"; // Hits fixed at 1 for simplicity in this draft
-            if (++i >= 10) break;
+            std::cout << "{\"domain\":\"" << entry.domain << "\", \"hits\":" << entry.hits << "}";
+            if (++i >= 15) break; // Increase to 15 to show more variety
         }
         
         std::cout << "], \"applications\":{";
@@ -654,8 +675,8 @@ private:
         // Detected SNIs
         if (!stats_.detected_snis.empty()) {
             std::cout << "\n[Detected Domains/SNIs]\n";
-            for (const auto& [sni, app] : stats_.detected_snis) {
-                std::cout << "  - " << sni << " -> " << appTypeToString(app) << "\n";
+            for (const auto& [sni, domain_stats] : stats_.detected_snis) {
+                std::cout << "  - " << sni << " (" << domain_stats.hits << " hits) -> " << appTypeToString(domain_stats.app_type) << "\n";
             }
         }
 
@@ -722,7 +743,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--fps" && i + 1 < argc) cfg.fps_per_lb = std::stoi(argv[++i]);
     }
     
-    DPIEngine engine(cfg);
+    DPIEngine engine(cfg, live_mode);
     
     for (const auto& ip : block_ips) engine.blockIP(ip);
     for (const auto& app : block_apps) engine.blockApp(app);

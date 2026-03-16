@@ -5,7 +5,10 @@ try:
         xgb_model = pickle.load(f)
     print("XGBoost Model loaded.")
     if hasattr(xgb_model, 'feature_names_in_'):
-        print(f"XGB Explict Features: {list(xgb_model.feature_names_in_)}")
+        features = list(xgb_model.feature_names_in_)
+        print(f"XGB Explict Features: {features}")
+        with open('features.txt', 'w') as f:
+            f.write('\n'.join(features))
     else:
         print("XGB Model doesn't have feature_names_in_ attribute.")
 except Exception as e:
