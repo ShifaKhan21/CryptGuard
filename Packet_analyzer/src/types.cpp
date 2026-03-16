@@ -59,6 +59,18 @@ std::string appTypeToString(AppType type) {
         case AppType::DROPBOX:    return "Dropbox";
         case AppType::CLOUDFLARE: return "Cloudflare";
         case AppType::UNACADEMY:  return "Unacademy";
+        case AppType::SSH:        return "SSH";
+        case AppType::FTP:        return "FTP";
+        case AppType::SMTP:       return "SMTP";
+        case AppType::POP3:       return "POP3";
+        case AppType::IMAP:       return "IMAP";
+        case AppType::ICMP:       return "ICMP";
+        case AppType::RDP:        return "RDP";
+        case AppType::NTP:        return "NTP";
+        case AppType::DHCP:       return "DHCP";
+        case AppType::SNMP:       return "SNMP";
+        case AppType::BITTORRENT: return "BitTorrent";
+        case AppType::IPV6_ICMP:  return "ICMPv6";
         default:                  return "Unknown";
     }
 }

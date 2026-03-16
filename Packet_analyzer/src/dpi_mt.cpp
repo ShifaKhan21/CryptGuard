@@ -98,6 +98,7 @@ struct FlowEntry {
     FiveTuple tuple;
     AppType app_type = AppType::UNKNOWN;
     std::string sni;
+    std::string ja3_fingerprint;
     uint64_t packets = 0;
     uint64_t bytes = 0;
     bool blocked = false;
@@ -266,7 +267,7 @@ public:
             uint64_t tot_pkts = flow.ml.fwd_packets + flow.ml.bwd_packets;
             uint64_t tot_bytes = flow.ml.fwd_bytes + flow.ml.bwd_bytes;
 
-            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|PORT:" << tuple.src_port << "|STATS:";
+            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|PORT:" << tuple.src_port << "|JA3:" << (flow.ja3_fingerprint.empty() ? "none" : flow.ja3_fingerprint) << "|STATS:";
             std::cout << "Flow Duration:" << duration << ",";
             std::cout << "Total Fwd Packets:" << flow.ml.fwd_packets << ",";
             std::cout << "Total Backward Packets:" << flow.ml.bwd_packets << ",";
@@ -451,6 +452,13 @@ private:
             if (sni) {
                 flow.sni = *sni;
                 flow.app_type = sniToAppType(*sni);
+                
+                // Also extract JA3 if it's a TLS Client Hello
+                auto ja3 = SNIExtractor::extractJA3(payload, pkt.payload_length);
+                if (ja3) {
+                    flow.ja3_fingerprint = *ja3;
+                }
+                
                 flow.classified = true;
                 return;
             }
@@ -493,6 +501,38 @@ private:
             }
             return;
         }
+
+        // Port-based classification for broader visibility
+        if (pkt.tuple.protocol == Protocol::TCP) {
+            uint16_t p = pkt.tuple.dst_port;
+            uint16_t src_p = pkt.tuple.src_port;
+            
+            if (p == 22 || src_p == 22) flow.app_type = AppType::SSH;
+            else if (p == 21 || src_p == 21 || p == 20 || src_p == 20) flow.app_type = AppType::FTP;
+            else if (p == 25 || src_p == 25 || p == 587 || src_p == 587) flow.app_type = AppType::SMTP;
+            else if (p == 110 || src_p == 110 || p == 995 || src_p == 995) flow.app_type = AppType::POP3;
+            else if (p == 143 || src_p == 143 || p == 993 || src_p == 993) flow.app_type = AppType::IMAP;
+            else if (p == 3389 || src_p == 3389) flow.app_type = AppType::RDP;
+            else if (p >= 6881 && p <= 6889) flow.app_type = AppType::BITTORRENT;
+            
+            if (flow.app_type != AppType::UNKNOWN) flow.classified = true;
+        } else if (pkt.tuple.protocol == Protocol::UDP) {
+            uint16_t p = pkt.tuple.dst_port;
+            uint16_t src_p = pkt.tuple.src_port;
+
+            if (p == 123 || src_p == 123) flow.app_type = AppType::NTP;
+            else if (p == 67 || p == 68 || src_p == 67 || src_p == 68) flow.app_type = AppType::DHCP;
+            else if (p == 161 || p == 162 || src_p == 161 || src_p == 162) flow.app_type = AppType::SNMP;
+            
+            if (flow.app_type != AppType::UNKNOWN) flow.classified = true;
+        } else if (pkt.tuple.protocol == Protocol::ICMP) {
+            flow.app_type = AppType::ICMP;
+            flow.classified = true;
+        } else if (pkt.tuple.protocol == 58) { // IPv6 ICMP
+            flow.app_type = AppType::IPV6_ICMP;
+            flow.classified = true;
+        }
+        return;
         
         // Port-based fallback (but don't mark as classified - might get SNI later)
         if (pkt.tuple.dst_port == 443) {
