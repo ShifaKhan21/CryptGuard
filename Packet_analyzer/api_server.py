@@ -310,64 +310,94 @@ def get_interfaces():
 
 class APIHandler(BaseHTTPRequestHandler):
     def _set_headers(self, code=200):
-        self.send_response(code)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+        try:
+            self.send_response(code)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.end_headers()
+        except: pass
+
+    def _send_error(self, code, message):
+        self._set_headers(code)
+        self.wfile.write(json.dumps({"status": "error", "message": message}).encode())
         
     def do_OPTIONS(self): self._set_headers(204)
 
     def do_GET(self):
         global engine_state
-        if self.path == '/api/interfaces':
-            with state_lock:
-                if not engine_state["interfaces"]: engine_state["interfaces"] = get_interfaces()
-                res = {"interfaces": engine_state["interfaces"], "selected": engine_state["selected_interface"], "is_capturing": engine_state["is_capturing"]}
-            self._set_headers()
-            self.wfile.write(json.dumps(res).encode())
-        elif self.path == '/api/stats':
-            with state_lock:
-                # Sort by last_seen (most recent first)
-                sorted_domains = [
-                    { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
-                      "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
-                      "prediction": v.get("prediction", "Benign"), "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
-                    for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
-                ][:50]
-                res = { "domains": sorted_domains, "total_packets": engine_state["total_packets"],
-                        "forwarded_packets": engine_state["forwarded_packets"], "dropped_packets": engine_state["dropped_packets"],
-                        "last_update": engine_state["last_update"] }
-            self._set_headers()
-            self.wfile.write(json.dumps(res).encode())
-        else: self.send_error(404)
+        try:
+            if self.path == '/api/interfaces':
+                with state_lock:
+                    if not engine_state["interfaces"]: engine_state["interfaces"] = get_interfaces()
+                    res = {"interfaces": engine_state["interfaces"], "selected": engine_state["selected_interface"], "is_capturing": engine_state["is_capturing"]}
+                self._set_headers()
+                self.wfile.write(json.dumps(res).encode())
+            elif self.path == '/api/stats':
+                with state_lock:
+                    # Sort by last_seen (most recent first)
+                    sorted_domains = [
+                        { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
+                          "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
+                          "prediction": v.get("prediction", "Benign"), "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
+                        for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
+                    ][:50]
+                    res = { "domains": sorted_domains, "total_packets": engine_state["total_packets"],
+                            "forwarded_packets": engine_state["forwarded_packets"], "dropped_packets": engine_state["dropped_packets"],
+                            "last_update": engine_state["last_update"] }
+                self._set_headers()
+                self.wfile.write(json.dumps(res).encode())
+            else: self._send_error(404, "Not Found")
+        except Exception as e:
+            self._send_error(500, str(e))
 
     def do_POST(self):
         global engine_state
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length)
-        if self.path == '/api/start':
-            try:
-                data = json.loads(body.decode())
-                idx = str(data.get('interface_idx')).split('.')[0]
-                with state_lock:
-                    engine_state.update({"selected_interface": idx, "is_capturing": True, "domains": {}, "total_packets": 0, "dropped_packets": 0, "forwarded_packets": 0})
-                self._set_headers()
-                self.wfile.write(json.dumps({"status": "success"}).encode())
-            except: self.send_error(400)
-        elif self.path == '/api/stop':
-            with state_lock: engine_state["is_capturing"] = False
-            self._set_headers(); self.wfile.write(json.dumps({"status": "success"}).encode())
-        elif self.path == '/api/block':
-            try:
-                pid = json.loads(body.decode()).get('pid')
-                if pid:
-                    psutil.Process(int(pid)).terminate()
-                    self._set_headers(); self.wfile.write(json.dumps({"status": "success"}).encode())
-                else: self.send_error(400)
-            except Exception as e: self.send_error(500, str(e))
-        else: self.send_error(404)
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length)
+            
+            if self.path == '/api/start':
+                try:
+                    data = json.loads(body.decode())
+                    idx_raw = data.get('interface_idx')
+                    if idx_raw is None:
+                        self._send_error(400, "Missing interface index")
+                        return
+                    idx = str(idx_raw).split('.')[0]
+                    with state_lock:
+                        engine_state.update({"selected_interface": idx, "is_capturing": True, "domains": {}, "total_packets": 0, "dropped_packets": 0, "forwarded_packets": 0})
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"status": "success"}).encode())
+                except: self._send_error(400, "Invalid JSON")
+            
+            elif self.path == '/api/stop':
+                with state_lock: engine_state["is_capturing"] = False
+                self._set_headers(); self.wfile.write(json.dumps({"status": "success"}).encode())
+            
+            elif self.path == '/api/block':
+                try:
+                    data = json.loads(body.decode())
+                    pid = data.get('pid')
+                    if pid:
+                        try:
+                            p = psutil.Process(int(pid))
+                            p.terminate()
+                            self._set_headers()
+                            self.wfile.write(json.dumps({"status": "success", "message": f"PID {pid} terminated"}).encode())
+                        except psutil.AccessDenied:
+                            self._send_error(403, "Access Denied. Try running as Administrator.")
+                        except psutil.NoSuchProcess:
+                            self._send_error(404, "Process no longer exists.")
+                    else:
+                        self._send_error(400, "Missing PID")
+                except Exception as e:
+                    self._send_error(500, str(e))
+            else:
+                self._send_error(404, "Not Found")
+        except Exception as e:
+            self._send_error(500, str(e))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
