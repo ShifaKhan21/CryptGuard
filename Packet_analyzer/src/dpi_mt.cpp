@@ -266,7 +266,7 @@ public:
             uint64_t tot_pkts = flow.ml.fwd_packets + flow.ml.bwd_packets;
             uint64_t tot_bytes = flow.ml.fwd_bytes + flow.ml.bwd_bytes;
 
-            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|STATS:";
+            std::cout << "FLOW_ID:" << (flow.sni.empty() ? "unknown" : flow.sni) << "|IP:" << tuple.dst_ip << "|PORT:" << tuple.src_port << "|STATS:";
             std::cout << "Flow Duration:" << duration << ",";
             std::cout << "Total Fwd Packets:" << flow.ml.fwd_packets << ",";
             std::cout << "Total Backward Packets:" << flow.ml.bwd_packets << ",";
@@ -483,7 +483,14 @@ private:
         // DNS
         if (pkt.tuple.dst_port == 53 || pkt.tuple.src_port == 53) {
             flow.app_type = AppType::DNS;
-            flow.classified = true;
+            if (pkt.payload_length > 12) {
+                const uint8_t* payload = pkt.data.data() + pkt.payload_offset;
+                auto query = DNSExtractor::extractQuery(payload, pkt.payload_length);
+                if (query) {
+                    flow.sni = *query;
+                    flow.classified = true;
+                }
+            }
             return;
         }
         
@@ -632,7 +639,10 @@ public:
         
         while (reader.readNextPacket(raw)) {
             if (!PacketParser::parse(raw, parsed)) continue;
-            if (!parsed.has_ip || (!parsed.has_tcp && !parsed.has_udp)) continue;
+            
+            // Allow TCP, UDP, ICMP (part of IP) and ARP (layer 2)
+            if (!parsed.has_ip && !parsed.has_arp) continue;
+            if (parsed.has_ip && !parsed.has_tcp && !parsed.has_udp && !parsed.has_icmp) continue;
             
             // Create packet
             Packet pkt;

@@ -52,6 +52,28 @@ struct UDPHeader {
     uint16_t checksum;         // Checksum
 };
 
+// ICMP Header (8 bytes)
+struct ICMPHeader {
+    uint8_t  type;             // Message type
+    uint8_t  code;             // Message code
+    uint16_t checksum;         // Checksum
+    uint16_t id;               // Identifier
+    uint16_t sequence;         // Sequence number
+};
+
+// ARP Header (28 bytes for Ethernet/IPv4)
+struct ARPHeader {
+    uint16_t hardware_type;    // 1 for Ethernet
+    uint16_t protocol_type;    // 0x0800 for IPv4
+    uint8_t  hardware_len;     // 6
+    uint8_t  protocol_len;     // 4
+    uint16_t opcode;           // 1 for Request, 2 for Reply
+    std::array<uint8_t, 6> sender_mac;
+    uint32_t sender_ip;
+    std::array<uint8_t, 6> target_mac;
+    uint32_t target_ip;
+};
+
 // Parsed packet information - human-readable format
 struct ParsedPacket {
     // Timestamps
@@ -74,8 +96,14 @@ struct ParsedPacket {
     // Transport layer (if present)
     bool has_tcp = false;
     bool has_udp = false;
+    bool has_icmp = false;
+    bool has_arp = false;
     uint16_t src_port;
     uint16_t dest_port;
+    
+    // ICMP-specific
+    uint8_t icmp_type;
+    uint8_t icmp_code;
     
     // TCP-specific
     uint8_t tcp_flags;
@@ -104,6 +132,8 @@ private:
     static bool parseIPv4(const uint8_t* data, size_t len, ParsedPacket& parsed, size_t& offset);
     static bool parseTCP(const uint8_t* data, size_t len, ParsedPacket& parsed, size_t& offset);
     static bool parseUDP(const uint8_t* data, size_t len, ParsedPacket& parsed, size_t& offset);
+    static bool parseICMP(const uint8_t* data, size_t len, ParsedPacket& parsed, size_t& offset);
+    static bool parseARP(const uint8_t* data, size_t len, ParsedPacket& parsed, size_t& offset);
 };
 
 // TCP Flag constants

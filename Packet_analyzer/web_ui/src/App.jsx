@@ -103,6 +103,29 @@ function App() {
     }
   };
 
+  const handleBlockProcess = async (pid, processName) => {
+    if (!window.confirm(`Are you sure you want to terminate process "${processName}" (PID: ${pid})? This will stop the network threat.`)) {
+      return;
+    }
+    
+    try {
+      const res = await fetch(`${API_BASE_URL}/block`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid })
+      });
+      const data = await res.json();
+      if (data.status === "success") {
+        alert(`Successfully terminated ${processName}.`);
+        fetchStats();
+      } else {
+        alert(`Failed to block process: ${data.message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`Error blocking process: ${err.message}`);
+    }
+  };
+
   return (
     <div className="app-container">
       <header>
@@ -194,13 +217,16 @@ function App() {
              )}
            </div>
         ) : (
-          <table>
+           <table>
             <thead>
               <tr>
                 <th>Official Destination</th>
+                <th>Service (PID)</th>
                 <th>Category</th>
-                <th>ML Statistics</th>
+                <th>Risk Score</th>
+                <th>AI Verdict</th>
                 <th style={{ textAlign: 'right' }}>Hits</th>
+                <th style={{ textAlign: 'center' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -212,6 +238,12 @@ function App() {
                     <div className="domain-icon">{item.domain.charAt(0).toUpperCase()}</div>
                     {item.domain}
                   </td>
+                  <td className="process-cell">
+                    <div className="process-info">
+                      <span className="process-name">{item.process?.name || 'Searching...'}</span>
+                      <span className="process-pid">PID: {item.process?.pid || '-'}</span>
+                    </div>
+                  </td>
                   <td>
                     <span className="category-badge" style={{
                       backgroundColor: item.category === 'Unacademy' ? 'rgba(4, 215, 114, 0.2)' : 
@@ -222,20 +254,49 @@ function App() {
                     </span>
                   </td>
                   <td>
-                    <button 
-                      className="btn-primary" 
-                      style={{ padding: '4px 12px', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: '600' }}
-                      onClick={() => {
-                        setSelectedFlow(item);
-                        setShowModal(true);
-                      }}
-                      disabled={Object.keys(item.ml_features || {}).length === 0}
-                    >
-                      {Object.keys(item.ml_features || {}).length > 0 ? "Inspect Features" : "Extracting..."}
-                    </button>
+                    <div className="risk-meter-container">
+                      <div 
+                        className="risk-meter-fill" 
+                        style={{ 
+                          width: `${item.risk_score}%`,
+                          background: item.risk_score > 70 ? '#ff4c4c' : item.risk_score > 30 ? '#ffcc00' : '#04d772'
+                        }}
+                      />
+                      <span className="risk-value">{item.risk_score}%</span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`verdict-badge ${item.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>
+                      {item.prediction}
+                    </span>
                   </td>
                   <td className="hits-cell" style={{ textAlign: 'right', fontWeight: 'bold' }}>
                     {item.hits.toLocaleString()}
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                      <button 
+                        className="btn-primary" 
+                        style={{ padding: '6px 10px', fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: '700' }}
+                        onClick={() => {
+                          setSelectedFlow(item);
+                          setShowModal(true);
+                        }}
+                        disabled={Object.keys(item.ml_features || {}).length === 0}
+                      >
+                        {Object.keys(item.ml_features || {}).length > 0 ? "Inspect" : "Scanning"}
+                      </button>
+                      
+                      {item.prediction === 'Malicious' && item.process?.pid > 0 && (
+                        <button 
+                          className="btn-danger" 
+                          style={{ padding: '6px 10px', fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: '700' }}
+                          onClick={() => handleBlockProcess(item.process.pid, item.process.name)}
+                        >
+                          Block
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -248,13 +309,20 @@ function App() {
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal-content glass-panel" style={{ maxWidth: '900px', width: '90%' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                <div className="domain-icon" style={{ width: '40px', height: '40px', fontSize: '1.2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+                <div className="domain-icon" style={{ width: '48px', height: '48px', fontSize: '1.4rem' }}>
                   {selectedFlow.domain.charAt(0).toUpperCase()}
                 </div>
                 <div>
-                  <h2 style={{ margin: 0 }}>{selectedFlow.domain}</h2>
-                  <span style={{ fontSize: '0.8rem', opacity: 0.7 }}>Full Machine Learning Feature Set</span>
+                  <h2 style={{ margin: 0, fontSize: '1.4rem' }}>{selectedFlow.domain}</h2>
+                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '4px' }}>
+                    <span className={`verdict-badge ${selectedFlow.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>
+                      {selectedFlow.prediction}
+                    </span>
+                    <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                      Risk Level: <strong style={{ color: selectedFlow.risk_score > 50 ? '#ff4c4c' : '#04d772' }}>{selectedFlow.risk_score}%</strong>
+                    </span>
+                  </div>
                 </div>
               </div>
               <button className="close-btn" onClick={() => setShowModal(false)}>&times;</button>

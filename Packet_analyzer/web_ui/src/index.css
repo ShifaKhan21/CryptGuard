@@ -378,3 +378,112 @@ tbody tr:hover {
   font-family: 'Inter', monospace;
 }
 
+/* AI Risk Meter & Verdict Badges */
+.risk-meter-container {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.risk-meter-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.risk-value {
+  position: absolute;
+  right: 0;
+  top: -16px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.verdict-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.verdict-badge.benign {
+  background: rgba(4, 215, 114, 0.15);
+  color: #04d772;
+  border: 1px solid rgba(4, 215, 114, 0.3);
+}
+
+.verdict-badge.malicious {
+  background: rgba(255, 76, 76, 0.15);
+  color: #ff4c4c;
+  border: 1px solid rgba(255, 76, 76, 0.4);
+  box-shadow: 0 0 15px rgba(255, 76, 76, 0.2);
+  animation: pulse-red 2s infinite;
+}
+
+@keyframes pulse-red {
+  0% { box-shadow: 0 0 0 0 rgba(255, 76, 76, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(255, 76, 76, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 76, 76, 0); }
+}
+
+/* Process Info */
+.process-cell {
+  max-width: 140px;
+}
+
+.process-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.process-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--secondary-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-pid {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Mitigation Buttons */
+.btn-danger {
+  background: linear-gradient(135deg, #ff4c4c 0%, #c62828 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(255, 76, 76, 0.3);
+}
+
+.btn-danger:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 76, 76, 0.4);
+  filter: brightness(1.1);
+}
+
+.btn-danger:active {
+  transform: translateY(0);
+}
+
+/* Tabular Number Alignment */
+.hits-cell {
+  font-family: 'Inter', monospace;
+  font-variant-numeric: tabular-nums;
+}

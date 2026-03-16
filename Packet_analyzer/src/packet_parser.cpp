@@ -44,6 +44,14 @@ bool PacketParser::parse(const RawPacket& raw, ParsedPacket& parsed) {
             if (!parseUDP(data, len, parsed, offset)) {
                 return false;
             }
+        } else if (parsed.protocol == Protocol::ICMP) {
+            if (!parseICMP(data, len, parsed, offset)) {
+                return false;
+            }
+        }
+    } else if (parsed.ether_type == EtherType::ARP) {
+        if (!parseARP(data, len, parsed, offset)) {
+            return false;
         }
     }
     
@@ -186,6 +194,53 @@ bool PacketParser::parseUDP(const uint8_t* data, size_t len,
     parsed.has_udp = true;
     offset += UDP_HEADER_LEN;
     
+    return true;
+}
+
+bool PacketParser::parseICMP(const uint8_t* data, size_t len, 
+                              ParsedPacket& parsed, size_t& offset) {
+    // ICMP header is 8 bytes
+    constexpr size_t ICMP_HEADER_LEN = 8;
+    
+    if (len < offset + ICMP_HEADER_LEN) {
+        return false;
+    }
+    
+    const uint8_t* icmp_data = data + offset;
+    parsed.has_icmp = true;
+    parsed.icmp_type = icmp_data[0];
+    parsed.icmp_code = icmp_data[1];
+    
+    // For ICMP, we set ports to 0 or use type/code to represent them if needed
+    parsed.src_port = parsed.icmp_type;
+    parsed.dest_port = parsed.icmp_code;
+    
+    offset += ICMP_HEADER_LEN;
+    return true;
+}
+
+bool PacketParser::parseARP(const uint8_t* data, size_t len, 
+                             ParsedPacket& parsed, size_t& offset) {
+    // ARP header is 28 bytes for Ethernet/IPv4
+    constexpr size_t ARP_HEADER_LEN = 28;
+    
+    if (len < offset + ARP_HEADER_LEN) {
+        return false;
+    }
+    
+    const uint8_t* arp_data = data + offset;
+    parsed.has_arp = true;
+    
+    // We can extract sender/target IPs for the dashboard
+    uint32_t sender_ip, target_ip;
+    std::memcpy(&sender_ip, arp_data + 14, 4);
+    std::memcpy(&target_ip, arp_data + 24, 4);
+    
+    parsed.src_ip = ipToString(sender_ip);
+    parsed.dest_ip = ipToString(target_ip);
+    parsed.protocol = 0; // ARP doesn't have a standard IP protocol number
+    
+    offset += ARP_HEADER_LEN;
     return true;
 }
 
