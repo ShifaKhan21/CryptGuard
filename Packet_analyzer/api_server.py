@@ -14,6 +14,191 @@ from socketserver import ThreadingMixIn
 import psutil
 import signal
 import re
+import math
+import statistics
+
+# =============================================================================
+# INTELLIGENCE LAYER — Rule-Based SNI Check + Beaconing + Productivity
+# =============================================================================
+
+# Known-bad SNI patterns → (reason, severity)
+# Severity: 'HIGH', 'MEDIUM'
+BAD_SNI_LIST = {
+    # Malware / C2 patterns
+    ".onion":           ("Dark Web / Tor Hidden Service",    "HIGH"),
+    "c2.":              ("Command & Control Server",          "HIGH"),
+    "bot.":             ("Known Botnet Pattern",              "HIGH"),
+    "malware":          ("Malware Domain Pattern",            "HIGH"),
+    "ransomware":       ("Ransomware Domain Pattern",         "HIGH"),
+    "cryptominer":      ("Crypto-Mining Domain",              "HIGH"),
+    "miner.":           ("Crypto-Mining Domain",              "HIGH"),
+    "trojan":           ("Trojan Domain Pattern",             "HIGH"),
+    "threat.demo":      ("[DEMO] Simulated Threat Domain",   "HIGH"),
+    # Suspicious patterns
+    "dyndns":           ("Dynamic DNS — Often Abused",       "MEDIUM"),
+    "no-ip.com":        ("Dynamic DNS — Often Abused",       "MEDIUM"),
+    "ngrok":            ("Tunneling Service — Often Abused", "MEDIUM"),
+    "pastebin":         ("Data Exfiltration Vector",         "MEDIUM"),
+    "bit.ly":           ("URL Shortener — Evasion Technique","MEDIUM"),
+    "tinyurl":          ("URL Shortener — Evasion Technique","MEDIUM"),
+    "freenom":          ("Free TLD — Abused for Phishing",   "MEDIUM"),
+    ".tk":              ("Free TLD — Abused for Phishing",   "MEDIUM"),
+    ".ml":              ("Free TLD — Abused for Phishing",   "MEDIUM"),
+    ".ga":              ("Free TLD — Abused for Phishing",   "MEDIUM"),
+    "portmap.io":       ("Tunneling Service",                "MEDIUM"),
+    "serveo.net":       ("Reverse Proxy Tunneling",          "MEDIUM"),
+}
+
+# Category → Productivity Score (0–100)
+PRODUCTIVITY_MAP = {
+    "GitHub":           95,
+    "Microsoft":        90,
+    "Teams":            90,
+    "Zoom":             88,
+    "Slack":            88,
+    "Google":           85,
+    "Cloudflare":       80,
+    "LinkedIn":         75,
+    "Unacademy":        75,
+    "Wikipedia":        72,
+    "Amazon":           65,
+    "Apple":            60,
+    "Reddit":           45,
+    "Twitter/X":        40,
+    "Instagram":        35,
+    "Spotify":          35,
+    "Netflix":          25,
+    "YouTube":          25,
+    "TikTok":           15,
+    "Telegram":         60,
+    "WhatsApp":         65,
+    "Discord":          55,
+    "Facebook":         35,
+    "Dropbox":          80,
+    "DNS":              70,
+    "HTTP":             50,
+    "HTTPS":            65,
+    "QUIC":             65,
+    "TLS":              65,
+    "Auto-Detected":    50,
+    "SUSPICIOUS":       10,
+    "MALWARE (THREAT)": 0,
+    "Unknown":          40,
+}
+
+# Categories that are HTTPS/TLS/QUIC encrypted
+ENCRYPTED_CATEGORIES = {
+    "HTTPS", "QUIC", "TLS", "Google", "Facebook", "YouTube", "Twitter/X",
+    "Instagram", "Netflix", "Amazon", "Microsoft", "Apple", "WhatsApp",
+    "Telegram", "TikTok", "Spotify", "Zoom", "Discord", "GitHub",
+    "LinkedIn", "Reddit", "Wikipedia", "Slack", "Teams", "Dropbox",
+    "Cloudflare", "Unacademy", "SUSPICIOUS", "MALWARE (THREAT)", "Auto-Detected",
+}
+
+# Beaconing: per-domain hit timestamp history (last 20 hits)
+_beacon_history = {}  # {domain: [timestamp, ...]}
+_beacon_lock = threading.Lock()
+
+BEACON_MIN_HITS = 5          # minimum hits to evaluate
+BEACON_CV_THRESHOLD = 0.35   # coefficient of variation below this = regular = beaconing
+BEACON_MIN_INTERVAL = 1.0    # ignore sub-second intervals (burst, not beacon)
+
+def _update_beacon_history(domain, ts):
+    """Track timestamps for beaconing detection (called outside state_lock)."""
+    with _beacon_lock:
+        hist = _beacon_history.setdefault(domain, [])
+        hist.append(ts)
+        if len(hist) > 20:
+            hist.pop(0)
+
+def _check_beaconing(domain):
+    """Return True if domain shows regular beacon-like hit intervals."""
+    with _beacon_lock:
+        hist = _beacon_history.get(domain, [])
+    if len(hist) < BEACON_MIN_HITS:
+        return False
+    intervals = [hist[i] - hist[i-1] for i in range(1, len(hist))]
+    intervals = [iv for iv in intervals if iv >= BEACON_MIN_INTERVAL]
+    if len(intervals) < BEACON_MIN_HITS - 1:
+        return False
+    try:
+        mean_iv = statistics.mean(intervals)
+        std_iv  = statistics.pstdev(intervals)
+        if mean_iv <= 0:
+            return False
+        cv = std_iv / mean_iv
+        return cv < BEACON_CV_THRESHOLD
+    except Exception:
+        return False
+
+def apply_intelligence_layer(domains, now):
+    """
+    Post-processing intelligence pass.
+    Called AFTER existing parse_dpi_output() logic — only adds new fields,
+    never overwrites existing category / risk_score / prediction.
+    """
+    for dom, info in domains.items():
+        # ── 1. Rule-Based SNI Check ──────────────────────────────────────────
+        rule_blocked = False
+        rule_reason  = ""
+        rule_severity = ""
+        dom_lower = dom.lower()
+        for pattern, (reason, severity) in BAD_SNI_LIST.items():
+            if pattern.lower() in dom_lower:
+                rule_blocked  = True
+                rule_reason   = reason
+                rule_severity = severity
+                break
+        info["is_rule_blocked"]  = rule_blocked
+        info["rule_reason"]      = rule_reason
+        info["rule_severity"]    = rule_severity
+        # Capture original category BEFORE any override (used for productivity + encryption)
+        original_cat = info.get("category", "Unknown")
+        # If rule-blocked override prediction to Malicious (keeps risk_score intact)
+        if rule_blocked:
+            if info.get("prediction", "Benign") == "Benign":
+                info["prediction"] = "Malicious"
+                if not info.get("risk_score", 0):
+                    info["risk_score"] = 85.0
+            if rule_severity == "HIGH":
+                info["category"] = "RULE BLOCK [HIGH]"
+            else:
+                info["category"] = "RULE BLOCK [MEDIUM]"
+
+        # ── 2. Beaconing Detection ───────────────────────────────────────────
+        _update_beacon_history(dom, info.get("last_seen", now))
+        info["is_beaconing"] = _check_beaconing(dom)
+
+        # ── 3. Productivity Score ────────────────────────────────────────────
+        # Rule-blocked = always 0 productivity
+        if rule_blocked:
+            info["productivity_score"] = 0
+        else:
+            # Use original_cat (before any rule override)
+            prod_score = PRODUCTIVITY_MAP.get(original_cat, None)
+            if prod_score is None:
+                # Partial match fallback
+                for key, score in PRODUCTIVITY_MAP.items():
+                    if key.lower() in original_cat.lower():
+                        prod_score = score
+                        break
+            # Special cases
+            if prod_score is None:
+                if original_cat == "SUSPICIOUS" or "SUSPICIOUS" in original_cat:
+                    prod_score = 10
+                elif original_cat in ("Auto-Detected", "Unknown"):
+                    prod_score = 40
+            info["productivity_score"] = prod_score if prod_score is not None else 40
+
+        # ── 4. Encryption Status ─────────────────────────────────────────────
+        is_enc = original_cat in ENCRYPTED_CATEGORIES
+        # Also flag encrypted if domain has HTTPS-like characteristics
+        if not is_enc and "." in dom and not dom.endswith(".local"):
+            is_enc = True  # Most modern SNI-resolved domains use TLS
+        info["is_encrypted"] = is_enc
+
+# END INTELLIGENCE LAYER
+# =============================================================================
 
 # Double Buffering for Parallel Capture
 TEMP_PCAP_A = "temp_capture_a.pcap"
@@ -246,6 +431,9 @@ def parse_dpi_output(dpi_output):
         expired = [d for d, v in domains.items() if (now - v.get("last_seen", 0)) > DECAY_TIMEOUT]
         for d in expired: del domains[d]
 
+        # ── Intelligence layer (runs after decay, adds new fields) ──────────
+        apply_intelligence_layer(domains, now)
+
 def process_pcap_file(pcap_path):
     try:
         temp_out = pcap_path + ".out"
@@ -331,14 +519,41 @@ class APIHandler(BaseHTTPRequestHandler):
             with state_lock:
                 # Sort by last_seen (most recent first)
                 sorted_domains = [
-                    { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
-                      "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
-                      "prediction": v.get("prediction", "Benign"), "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
+                    {
+                        "domain":             k,
+                        "category":           v["category"],
+                        "hits":               v["count"],
+                        "last_seen":          v.get("last_seen", 0),
+                        "ml_features":        v.get("ml_features", {}),
+                        "risk_score":         v.get("risk_score", 0),
+                        "prediction":         v.get("prediction", "Benign"),
+                        "process":            v.get("process", {"pid": 0, "name": "Unknown"}),
+                        # Intelligence layer fields
+                        "is_rule_blocked":    v.get("is_rule_blocked", False),
+                        "rule_reason":        v.get("rule_reason", ""),
+                        "rule_severity":      v.get("rule_severity", ""),
+                        "is_beaconing":       v.get("is_beaconing", False),
+                        "productivity_score": v.get("productivity_score", 50),
+                        "is_encrypted":       v.get("is_encrypted", True),
+                    }
                     for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
                 ][:50]
-                res = { "domains": sorted_domains, "total_packets": engine_state["total_packets"],
-                        "forwarded_packets": engine_state["forwarded_packets"], "dropped_packets": engine_state["dropped_packets"],
-                        "last_update": engine_state["last_update"] }
+                # Summary counters for dashboard
+                rule_blocked_count  = sum(1 for d in sorted_domains if d["is_rule_blocked"])
+                beaconing_count     = sum(1 for d in sorted_domains if d["is_beaconing"])
+                encrypted_count     = sum(1 for d in sorted_domains if d["is_encrypted"])
+                enc_pct = round(100 * encrypted_count / len(sorted_domains), 1) if sorted_domains else 0
+                res = {
+                    "domains":            sorted_domains,
+                    "total_packets":      engine_state["total_packets"],
+                    "forwarded_packets":  engine_state["forwarded_packets"],
+                    "dropped_packets":    engine_state["dropped_packets"],
+                    "last_update":        engine_state["last_update"],
+                    # Intelligence summary
+                    "rule_blocked_count": rule_blocked_count,
+                    "beaconing_count":    beaconing_count,
+                    "encrypted_pct":      enc_pct,
+                }
             self._set_headers()
             self.wfile.write(json.dumps(res).encode())
         else: self.send_error(404)

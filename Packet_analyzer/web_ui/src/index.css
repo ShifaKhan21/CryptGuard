@@ -487,3 +487,190 @@ tbody tr:hover {
   font-family: 'Inter', monospace;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Header subtitle ──────────────────────────────────────── */
+.header-sub {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  letter-spacing: 0.3px;
+}
+
+/* ── Intelligence Summary Bar ────────────────────────────── */
+.intel-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.intel-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.07);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  transition: transform 0.2s ease;
+}
+.intel-card:hover { transform: translateY(-2px); }
+
+.intel-card--red   { background: rgba(255, 76, 76, 0.08); border-color: rgba(255, 76, 76, 0.2); }
+.intel-card--orange{ background: rgba(255,140,0,0.08);   border-color: rgba(255,140,0,0.2); }
+.intel-card--green { background: rgba(4,215,114,0.08);   border-color: rgba(4,215,114,0.2); }
+.intel-card--blue  { background: rgba(102,252,241,0.06); border-color: rgba(102,252,241,0.15); }
+
+.intel-icon { font-size: 1.6rem; line-height: 1; }
+
+.intel-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.intel-card--red   .intel-value { color: #ff4c4c; }
+.intel-card--orange .intel-value { color: #ff8800; }
+.intel-card--green .intel-value { color: #04d772; }
+.intel-card--blue  .intel-value { color: var(--accent-color); }
+
+.intel-label {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-top: 3px;
+}
+
+/* ── Security Flag Badges ────────────────────────────────── */
+.flags-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 110px;
+}
+
+.flag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  text-transform: uppercase;
+  cursor: default;
+}
+
+.flag-rule {
+  background: rgba(255, 76, 76, 0.15);
+  color: #ff4c4c;
+  border: 1px solid rgba(255, 76, 76, 0.35);
+}
+.flag-rule.flag-high {
+  background: rgba(255, 30, 30, 0.22);
+  box-shadow: 0 0 10px rgba(255,30,30,0.2);
+  animation: pulse-red 2s infinite;
+}
+.flag-rule.flag-medium {
+  background: rgba(255, 120, 50, 0.18);
+  color: #ff7832;
+  border-color: rgba(255,120,50,0.35);
+}
+
+.flag-beacon {
+  background: rgba(255,140,0,0.15);
+  color: #ff9a00;
+  border: 1px solid rgba(255,140,0,0.35);
+  animation: beacon-blink 1.5s ease-in-out infinite;
+}
+
+.flag-clean {
+  background: rgba(4,215,114,0.08);
+  color: #04d772;
+  border: 1px solid rgba(4,215,114,0.2);
+}
+
+@keyframes beacon-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ── Encryption Badge ────────────────────────────────────── */
+.enc-badge {
+  font-size: 0.75rem;
+  margin-left: 2px;
+  opacity: 0.8;
+  cursor: default;
+}
+
+/* ── Productivity Bar ────────────────────────────────────── */
+.productivity-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 80px;
+}
+
+.productivity-bar-bg {
+  flex: 1;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.productivity-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
+}
+
+.productivity-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+  text-align: right;
+}
+
+/* ── Row Threat Highlights ───────────────────────────────── */
+.row-rule-blocked {
+  border-left: 3px solid rgba(255, 76, 76, 0.7) !important;
+  background: rgba(255, 76, 76, 0.04) !important;
+}
+.row-rule-blocked:hover {
+  background: rgba(255, 76, 76, 0.08) !important;
+}
+
+.row-beaconing {
+  border-left: 3px solid rgba(255,140,0,0.7) !important;
+  background: rgba(255,140,0,0.04) !important;
+}
+.row-beaconing:hover {
+  background: rgba(255,140,0,0.08) !important;
+}
+
+/* ── Table wrapper for horizontal scroll ────────────────── */
+.table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-wrapper table {
+  min-width: 1050px;
+}
+
+/* ── App container wider for new columns ────────────────── */
+.app-container {
+  max-width: 1400px;
+}
+
+/* ── Responsive: stack intel-bar on small screens ────────── */
+@media (max-width: 768px) {
+  .intel-bar { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid { grid-template-columns: 1fr; }
+}
