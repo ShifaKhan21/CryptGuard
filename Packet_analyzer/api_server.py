@@ -14,6 +14,21 @@ from socketserver import ThreadingMixIn
 import psutil
 import signal
 import re
+from datetime import datetime
+
+# ── C2 Beacon Detection Module ─────────────────────────────────────────────
+try:
+    from beacon_detector import analyze_beacon, get_beacon_history, get_db_stats, clear_old_records
+    BEACON_DETECTION_ENABLED = True
+    print("[C2] Beacon detection module loaded.")
+except ImportError as e:
+    BEACON_DETECTION_ENABLED = False
+    print(f"[C2] Beacon detection NOT available: {e}")
+    # Stubs so the rest of the code doesn't crash
+    def analyze_beacon(*a, **kw): return {}
+    def get_beacon_history(limit=50): return []
+    def get_db_stats(): return {}
+    def clear_old_records(**kw): return 0
 
 # Double Buffering for Parallel Capture
 TEMP_PCAP_A = "temp_capture_a.pcap"
@@ -229,7 +244,7 @@ def parse_dpi_output(dpi_output):
                         if src_port in port_map:
                             domains[dom]["process"] = port_map[src_port]
                     
-                    # AI Inference
+                    # AI Inference (unchanged)
                     if rf_model and xgb_model and "ml_features" in domains[dom]:
                         try:
                             # Map features to the 57-feature vector
@@ -246,6 +261,38 @@ def parse_dpi_output(dpi_output):
                                 domains[dom]["beacon_detected"] = bool(float(prob) > 0.5)
                                 if float(prob) > 0.5: domains[dom].update({"category": "SUSPICIOUS"})
                         except: pass
+
+                    # ── C2 Beacon Analysis (additive — does NOT modify ML verdict) ──
+                    if BEACON_DETECTION_ENABLED:
+                        try:
+                            process_info = domains[dom].get("process", {})
+                            process_name = process_info.get("name", "unknown") if process_info else "unknown"
+                            dest_ip = dom  # use domain/IP as destination identifier
+                            pkt_size = int(stats_dict.get("Avg Packet Size", 0))
+                            beacon_result = analyze_beacon(
+                                process=process_name,
+                                destination_ip=dest_ip,
+                                packet_size=pkt_size,
+                                timestamp=datetime.now(),
+                                port=src_port
+                            )
+                            # Attach beacon analysis to domain entry
+                            domains[dom]["beacon_analysis"] = {
+                                "beacon_score": beacon_result.get("beacon_score", 0),
+                                "verdict": beacon_result.get("verdict", "NORMAL"),
+                                "signals_triggered": beacon_result.get("signals_triggered", []),
+                                "should_block": beacon_result.get("should_block", False)
+                            }
+                            # If beacon says BLOCK → escalate prediction
+                            if beacon_result.get("should_block") and not domains[dom].get("beacon_detected"):
+                                domains[dom].update({
+                                    "beacon_detected": True,
+                                    "prediction": "Malicious",
+                                    "risk_score": max(domains[dom].get("risk_score", 0), 85.0),
+                                    "category": "C2 BEACON DETECTED"
+                                })
+                        except Exception as _be:
+                            log_debug(f"BeaconDetector error: {_be}")
                 except: pass
 
         # State updates and decay
@@ -348,6 +395,7 @@ class APIHandler(BaseHTTPRequestHandler):
                         { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
                           "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
                           "prediction": v.get("prediction", "Benign"), "beacon_detected": v.get("beacon_detected", False),
+                          "beacon_analysis": v.get("beacon_analysis", {}),
                           "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
                         for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
                     ][:50]
@@ -356,6 +404,21 @@ class APIHandler(BaseHTTPRequestHandler):
                             "last_update": engine_state["last_update"] }
                 self._set_headers()
                 self.wfile.write(json.dumps(res).encode())
+            # ── New C2 Beacon Endpoints ──────────────────────────────────────────
+            elif self.path == '/api/beacon-history':
+                try:
+                    history = get_beacon_history(limit=50)
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"alerts": history, "count": len(history)}).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/threat-cache':
+                try:
+                    stats = get_db_stats()
+                    self._set_headers()
+                    self.wfile.write(json.dumps(stats).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
             else: self._send_error(404, "Not Found")
         except Exception as e:
             self._send_error(500, str(e))
@@ -400,6 +463,14 @@ class APIHandler(BaseHTTPRequestHandler):
                             self._send_error(404, "Process no longer exists.")
                     else:
                         self._send_error(400, "Missing PID")
+                except Exception as e:
+                    self._send_error(500, str(e))
+            # ── New C2 Beacon Endpoints (POST) ──────────────────────────────────
+            elif self.path == '/api/clear-cache':
+                try:
+                    deleted = clear_old_records(older_than_hours=0)  # clear ALL
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"status": "success", "deleted": deleted}).encode())
                 except Exception as e:
                     self._send_error(500, str(e))
             else:
