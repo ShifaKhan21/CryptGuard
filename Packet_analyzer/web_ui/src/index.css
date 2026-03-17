@@ -367,6 +367,7 @@ tr:hover { background: var(--table-hover); }
 }
 .tab-count.danger { background: var(--danger); color: white; border-color: var(--danger); }
 .tab-count.warning { background: var(--warning); color: white; border-color: var(--warning); }
+.tab-count.info { background: var(--accent-color); color: white; border-color: var(--accent-color); }
 
 /* ─── TOP CONTROLS — 4-column when beacon stat visible ─────── */
 .top-controls {
@@ -460,6 +461,7 @@ tr.row-suspicious {
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
+.signal-tag.info { background: #3b82f6; color: white !important; border: none; padding: 0.15rem 0.5rem; font-size: 0.6rem; }
 
 /* ─── SCORE RING ────────────────────────────────────────────── */
 .score-ring {
@@ -488,6 +490,7 @@ tr.row-suspicious {
 }
 .beacon-pill.danger  { background: rgba(244,63,94,0.15);  color: var(--danger);  border: 1px solid rgba(244,63,94,0.3);  }
 .beacon-pill.warning { background: rgba(245,158,11,0.15); color: var(--warning); border: 1px solid rgba(245,158,11,0.3); }
+.beacon-pill.info { background: rgba(59, 130, 246, 0.15); color: var(--accent-color); border: 1px solid rgba(59, 130, 246, 0.3); }
 
 /* ─── SUSPICIOUS CHIP ───────────────────────────────────────── */
 .verdict-chip.suspicious-chip {

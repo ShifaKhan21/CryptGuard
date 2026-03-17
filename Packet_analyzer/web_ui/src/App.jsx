@@ -8,7 +8,8 @@ function App() {
   const [selectedInterface, setSelectedInterface] = useState('');
   const [isCapturing, setIsCapturing] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
-  const [activeTab, setActiveTab] = useState('traffic'); // 'traffic' | 'beacons'
+  const [activeTab, setActiveTab] = useState('traffic'); // 'traffic' | 'beacons' | 'intel'
+  const [intelHistory, setIntelHistory] = useState([]);
   
   const [stats, setStats] = useState({
     domains: [],
@@ -35,7 +36,10 @@ function App() {
   useEffect(() => {
     if (isCapturing) {
       pollInterval.current = setInterval(fetchStats, 1500);
-      beaconPollInterval.current = setInterval(fetchBeacons, 4000);
+      beaconPollInterval.current = setInterval(() => {
+        fetchBeacons();
+        fetchIntelHistory();
+      }, 4000);
     } else {
       if (pollInterval.current) clearInterval(pollInterval.current);
       if (beaconPollInterval.current) clearInterval(beaconPollInterval.current);
@@ -49,7 +53,11 @@ function App() {
   // Always poll beacons even when not capturing (to show simulation results)
   useEffect(() => {
     fetchBeacons();
-    const t = setInterval(fetchBeacons, 5000);
+    fetchIntelHistory();
+    const t = setInterval(() => {
+      fetchBeacons();
+      fetchIntelHistory();
+    }, 5000);
     return () => clearInterval(t);
   }, []);
 
@@ -93,6 +101,14 @@ function App() {
         total_records: cacheData.total_records || 0,
       });
     } catch (err) { console.error('Beacon fetch failed:', err); }
+  };
+
+  const fetchIntelHistory = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/intel-history`);
+      const data = await res.json();
+      setIntelHistory(data.history || []);
+    } catch (err) { console.error('Intel fetch failed:', err); }
   };
 
   const handleStartCapture = async () => {
@@ -203,6 +219,10 @@ function App() {
               {beaconCount + suspiciousCount}
             </span>
           )}
+        </button>
+        <button className={`tab-btn ${activeTab === 'intel' ? 'active' : ''}`} onClick={() => setActiveTab('intel')}>
+          🌍 Global Intelligence
+          {intelHistory.length > 0 && <span className="tab-count info">{intelHistory.length}</span>}
         </button>
       </div>
 
@@ -370,6 +390,63 @@ function App() {
                           ? <span className="verdict-chip malicious">🚫 BLOCK</span>
                           : <span className="verdict-chip benign">✓ ALERT</span>
                         }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ═══ TAB 3: GLOBAL INTELLIGENCE ═══ */}
+      {activeTab === 'intel' && (
+        <section className="table-section">
+          <div className="table-header">
+            <h2>🌍 Threat Intelligence Cache</h2>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              <span className="beacon-pill info">Verified IPs: {intelHistory.length}</span>
+              <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>Powered by AbuseIPDB Global Feed</span>
+            </div>
+          </div>
+
+          <div className="table-container">
+            {intelHistory.length === 0 ? (
+              <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🧐</div>
+                <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>No Intelligence History</div>
+                <div style={{ fontSize: '0.7rem' }}>Detection will appear once external IPs are verified.</div>
+              </div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>IP Address</th>
+                    <th>Provider</th>
+                    <th style={{ textAlign: 'center' }}>Abuse Score</th>
+                    <th>Risk Level</th>
+                    <th>Last Verified</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {intelHistory.map((item, idx) => (
+                    <tr key={idx}>
+                      <td><code style={{ fontSize: '0.85rem', fontWeight: 700 }}>{item.ip}</code></td>
+                      <td><span className="signal-tag info">{item.provider}</span></td>
+                      <td style={{ textAlign: 'center' }}>
+                        <div className="score-ring" style={{ '--score-color': item.score > 50 ? 'var(--danger)' : item.score > 0 ? 'var(--warning)' : 'var(--success)' }}>
+                          <strong>{item.score}</strong>
+                          <span>/100</span>
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`verdict-chip ${item.score > 50 ? 'malicious' : item.score > 0 ? 'suspicious-chip' : 'benign'}`}>
+                          {item.score > 50 ? 'BLACKLISTED' : item.score > 0 ? 'SUSPICIOUS' : 'CLEAN'}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        {new Date(item.last_updated * 1000).toLocaleString()}
                       </td>
                     </tr>
                   ))}

@@ -30,6 +30,16 @@ except ImportError as e:
     def get_db_stats(): return {}
     def clear_old_records(**kw): return 0
 
+# ── Threat Intel Module ──────────────────────────────────────────────────
+try:
+    from threat_intel import intel_engine
+    INTEL_ENABLED = True
+    print("[Intel] Threat intelligence module loaded.")
+except ImportError as e:
+    INTEL_ENABLED = False
+    print(f"[Intel] Threat intel NOT available: {e}")
+
+
 # Double Buffering for Parallel Capture
 TEMP_PCAP_A = "temp_capture_a.pcap"
 TEMP_PCAP_B = "temp_capture_b.pcap"
@@ -291,9 +301,25 @@ def parse_dpi_output(dpi_output):
                                     "risk_score": max(domains[dom].get("risk_score", 0), 85.0),
                                     "category": "C2 BEACON DETECTED"
                                 })
+                            # ── Threat Intel Analysis (AbuseIPDB) ───────────────────────────
+                            if INTEL_ENABLED:
+                                # Simple check: is dom an IP?
+                                is_ip = re.match(r"^(\d{1,3}\.){3}\d{1,3}$", dest_ip)
+                                if is_ip:
+                                    rep_score, rep_data = intel_engine.get_ip_reputation(dest_ip)
+                                    domains[dom]["reputation_score"] = rep_score
+                                    # If reputation is very bad (>50) → escalate risk
+                                    if rep_score > 50:
+                                        domains[dom].update({
+                                            "prediction": "Malicious",
+                                            "risk_score": max(domains[dom].get("risk_score", 0), float(rep_score)),
+                                            "category": f"SUSPICIOUS IP ({rep_score}%)"
+                                        })
+
                         except Exception as _be:
-                            log_debug(f"BeaconDetector error: {_be}")
+                            log_debug(f"BeaconDetector/Intel error: {_be}")
                 except: pass
+
 
         # State updates and decay
         engine_state["last_update"] = now
@@ -410,6 +436,16 @@ class APIHandler(BaseHTTPRequestHandler):
                     history = get_beacon_history(limit=50)
                     self._set_headers()
                     self.wfile.write(json.dumps({"alerts": history, "count": len(history)}).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/intel-history':
+                try:
+                    if INTEL_ENABLED:
+                        history = intel_engine.get_history(limit=50)
+                        self._set_headers()
+                        self.wfile.write(json.dumps({"history": history, "count": len(history)}).encode())
+                    else:
+                        self._send_error(400, "Threat Intel module not enabled")
                 except Exception as e:
                     self._send_error(500, str(e))
             elif self.path == '/api/threat-cache':

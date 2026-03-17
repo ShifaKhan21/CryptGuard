@@ -156,6 +156,28 @@ for i, dest in enumerate(['8.8.8.8', '1.1.1.1', '142.250.80.46', '104.18.23.45',
 sc, vd, sg, bl = analyze('chrome.exe', '8.8.8.8')
 print(f'  chrome.exe varied IPs   | Score {sc:3d}/100 | {vd}')
 
+# SCENARIO D: AbuseIPDB Detection — Threat Intelligence
+print('\n  SCENARIO D: powershell.exe -> 185.33.22.11 (Known Malicious IP)\n')
+INTEL_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'intel_cache.db')
+try:
+    intel_conn = sqlite3.connect(INTEL_DB)
+    # Inject 185.33.22.11 as a high-risk IP (95%)
+    intel_conn.execute("""
+        INSERT OR REPLACE INTO ip_cache (ip, score, provider, last_updated, raw_data)
+        VALUES (?, ?, ?, ?, ?)
+    """, ("185.33.22.11", 95, "AbuseIPDB (Simulation)", time.time(), '{"abuse_score": 95}'))
+    intel_conn.commit()
+    intel_conn.close()
+    print('  ✅ Malicious IP (185.33.22.11) injected into Intel Cache.')
+    
+    # Send a burst to ensure it's visible
+    for _ in range(10):
+        insert('powershell.exe', '185.33.22.11', 1200, time.time(), 443)
+        time.sleep(0.1)
+    print('  🚀 10x Traffic burst sent to Malicious IP. It will appear on the dashboard table as SUSPICIOUS.')
+except Exception as e:
+    print(f'  ❌ Intel Injection failed: {e}')
+
 # ═══ FINAL RESULTS ═══
 print()
 print('=' * 68)
