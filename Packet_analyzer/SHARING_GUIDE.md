@@ -12,13 +12,19 @@ You need the following installed on your system:
 
 ### B. Python Environment
 *   **Python 3.8+**: [Download Python](https://www.python.org/downloads/).
-*   Install required libraries by running this in your terminal:
+*   Install required libraries:
     ```bash
-    pip install psutil pandas numpy joblib joblib scikit-learn
+    pip install -r requirements.txt
     ```
+    *(Specifically: psutil, pandas, numpy, scipy, joblib, scikit-learn, xgboost, requests, python-dotenv)*
 
 ### C. UI Environment
-*   **Node.js**: [Download Node.js](https://nodejs.org/). This is needed to run the dashboard.
+*   **Node.js**: [Download Node.js](https://nodejs.org/).
+*   Run `npm install` inside the `web_ui` folder.
+
+### D. API Keys (.env)
+*   Rename `.env.example` to `.env`.
+*   Add your `ABUSEIPDB_API_KEY` and `VT_API_KEY` for real-time threat intelligence.
 
 ---
 
@@ -43,4 +49,8 @@ We have provided a one-click launcher for convenience.
 ## 4. Troubleshooting
 *   **"tshark not found"**: Ensure Wireshark is installed and the path `C:\Program Files\Wireshark\tshark.exe` exists.
 *   **"Models not found"**: Ensure the `model/` folder contains `rf_model_v1.pkl` and `xgb_model.pkl`.
-*   **"DPI Engine Error"**: Ensure `dpi_engine.exe` is in the `Packet_analyzer` folder.
+*   **"DPI Engine Error"**: Ensure `dpi_engine.exe` is present. If you need to recompile, use:
+    ```bash
+    cmd /c "set PATH=C:\msys64\mingw64\bin;%PATH% && g++ -O3 -std=c++17 src/dpi_mt.cpp src/packet_parser.cpp src/sni_extractor.cpp src/pcap_reader.cpp src/types.cpp src/md5.cpp -Iinclude -lws2_32 -o dpi_engine.exe"
+    ```
+    *(Note: Replace the path to MinGW if installed elsewhere).*

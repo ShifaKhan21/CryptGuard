@@ -14,6 +14,8 @@ from socketserver import ThreadingMixIn
 import psutil
 import signal
 import re
+import datetime
+import threat_intel
 
 # Double Buffering for Parallel Capture
 TEMP_PCAP_A = "temp_capture_a.pcap"
@@ -37,7 +39,7 @@ engine_state = {
     "total_packets": 0,
     "dropped_packets": 0,
     "forwarded_packets": 0,
-    "port_map": {} # LocalPort -> {"pid": X, "name": Y}
+    "port_map": {}, # LocalPort -> {"pid": X, "name": Y}
 }
 
 state_lock = threading.Lock()
@@ -135,7 +137,7 @@ def get_val(l, label):
         try:
             # Match the label and any digits that follow later on the same line
             # This ignores box characters like ║, ╔, or mangled Γòæ
-            match = re.search(f"{re.escape(label)}.*?(\d+)", l)
+            match = re.search(fr"{re.escape(label)}.*?(\d+)", l)
             if match:
                 return int(match.group(1))
         except: pass
@@ -222,6 +224,10 @@ def parse_dpi_output(dpi_output):
                     if dom not in domains:
                         domains[dom] = {"count": 1, "category": "Auto-Detected", "last_seen": now}
                     
+                    # Ensure Label and ClassLabel are in ml_features
+                    stats_dict["Label"] = domains[dom].get("prediction", "Unknown")
+                    stats_dict["ClassLabel"] = domains[dom].get("category", "Unknown")
+
                     domains[dom]["ml_features"] = stats_dict
                     if src_port:
                         domains[dom]["src_port"] = src_port
@@ -241,11 +247,32 @@ def parse_dpi_output(dpi_output):
                                 domains[dom].update({"risk_score": 100.0, "prediction": "Malicious", "category": "MALWARE (THREAT)", "beacon_detected": True})
                             else:
                                 prob = xgb_model.predict_proba(df)[0][1]
-                                domains[dom]["risk_score"] = float(round(float(prob) * 100, 2))
-                                domains[dom]["prediction"] = "Malicious" if float(prob) > 0.5 else "Benign"
-                                domains[dom]["beacon_detected"] = bool(float(prob) > 0.5)
-                                if float(prob) > 0.5: domains[dom].update({"category": "SUSPICIOUS"})
-                        except: pass
+                                rf_score = float(prob) * 100
+                                
+                                # --- Threat Intel Integration ---
+                                intel = threat_intel.check_threat_intel(dom)
+                                intel_score = intel["confidence"]
+                                
+                                proc_info = domains[dom].get("process", {})
+                                
+                                final_score = (rf_score * 0.5) + (intel_score * 0.5)
+                                
+                                verdict = "Benign"
+                                if prob > 0.5: verdict = "Malicious"
+                                elif intel_score > 75: verdict = "Malicious"
+                                elif intel_score > 40: verdict = "Suspicious"
+                                
+                                domains[dom].update({
+                                    "risk_score": float(round(final_score, 2)),
+                                    "prediction": verdict,
+                                    "threat_intel": intel,
+                                    "reason": "Combined" if intel_score > 0 else "RF Model"
+                                })
+                                
+                                if verdict == "Malicious": domains[dom].update({"category": "THREAT"})
+                                elif verdict == "Suspicious": domains[dom].update({"category": "SUSPICIOUS"})
+                        except Exception as e:
+                            log_debug(f"Inference Error: {e}")
                 except: pass
 
         # State updates and decay
@@ -310,10 +337,22 @@ def run_dpi_capture_loop():
 
 def get_interfaces():
     try:
+        print(f"[DEBUG] Fetching interfaces using: {TSHARK_PATH} -D")
         cmd = [TSHARK_PATH, "-D"]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
-    except: return []
+        ifs = []
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line: continue
+            if ". " in line:
+                idx = line.split(". ")[0]
+                desc = line.split(". ", 1)[1]
+                ifs.append({"name": idx, "description": desc})
+        print(f"[DEBUG] Found {len(ifs)} interfaces.")
+        return ifs
+    except Exception as e:
+        print(f"[ERROR] get_interfaces failed: {e}")
+        return []
 
 class APIHandler(BaseHTTPRequestHandler):
     def _set_headers(self, code=200):
@@ -326,6 +365,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self.end_headers()
         except: pass
 
+    def _send_json(self, data, status=200):
+        self._set_headers(status)
+        self.wfile.write(json.dumps(data).encode())
+        
     def _send_error(self, code, message):
         self._set_headers(code)
         self.wfile.write(json.dumps({"status": "error", "message": message}).encode())
@@ -347,8 +390,10 @@ class APIHandler(BaseHTTPRequestHandler):
                     sorted_domains = [
                         { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
                           "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
-                          "prediction": v.get("prediction", "Benign"), "beacon_detected": v.get("beacon_detected", False),
-                          "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
+                          "prediction": v.get("prediction", "Benign"),
+                          "process": v.get("process", {"pid": 0, "name": "Unknown"}),
+                          "threat_intel": v.get("threat_intel", {"verdict": "CLEAN", "confidence": 0}),
+                          "reason": v.get("reason", "RF Model") }
                         for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
                     ][:50]
                     res = { "domains": sorted_domains, "total_packets": engine_state["total_packets"],
@@ -366,7 +411,13 @@ class APIHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(length)
             
-            if self.path == '/api/start':
+            if self.path == '/api/clear-cache':
+                # Implement manual clear if needed, for now just success
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Cache cleared")
+            
+            elif self.path == '/api/start':
                 try:
                     data = json.loads(body.decode())
                     idx_raw = data.get('interface_idx')
@@ -384,24 +435,6 @@ class APIHandler(BaseHTTPRequestHandler):
                 with state_lock: engine_state["is_capturing"] = False
                 self._set_headers(); self.wfile.write(json.dumps({"status": "success"}).encode())
             
-            elif self.path == '/api/block':
-                try:
-                    data = json.loads(body.decode())
-                    pid = data.get('pid')
-                    if pid:
-                        try:
-                            p = psutil.Process(int(pid))
-                            p.terminate()
-                            self._set_headers()
-                            self.wfile.write(json.dumps({"status": "success", "message": f"PID {pid} terminated"}).encode())
-                        except psutil.AccessDenied:
-                            self._send_error(403, "Access Denied. Try running as Administrator.")
-                        except psutil.NoSuchProcess:
-                            self._send_error(404, "Process no longer exists.")
-                    else:
-                        self._send_error(400, "Missing PID")
-                except Exception as e:
-                    self._send_error(500, str(e))
             else:
                 self._send_error(404, "Not Found")
         except Exception as e:

@@ -16,8 +16,9 @@ This document explains **everything** about this project - from basic networking
 7. [Deep Dive: Each Component](#7-deep-dive-each-component)
 8. [How SNI Extraction Works](#8-how-sni-extraction-works)
 9. [How Blocking Works](#9-how-blocking-works)
-10. [Building and Running](#10-building-and-running)
-11. [Understanding the Output](#11-understanding-the-output)
+10. [Advanced AI & Intent Detection](#10-advanced-ai--intent-detection)
+11. [Building and Running](#11-building-and-running)
+12. [Understanding the Output](#12-understanding-the-output)
 
 ---
 
@@ -1032,7 +1033,46 @@ python3 generate_test_pcap.py
 
 ---
 
-## Summary
+## 10. Advanced AI & Intent Detection
+
+In the latest iteration (v2.5), CryptGuard integrates three independent detection layers for maximum accuracy:
+
+1.  **Machine Learning Engine**: An ensemble of **Random Forest** and **XGBoost** models trained on 57 network features (packet length, inter-arrival time, window sizes, etc.).
+2.  **Threat Intelligence Feed**: Real-time checking against **AbuseIPDB** and **VirusTotal** APIs to identify known malicious infrastructures.
+3.  **Behavioral Beacon Detection**: Uses **Fast Fourier Transform (FFT)** to detect periodic heartbeat patterns often found in Command & Control (C2) communication.
+
+---
+
+## 11. Building and Running
+
+### Prerequisites
+- **MSYS2 / MinGW-w64**: For the C++ compiler.
+- **Python 3.8+**: For the API server.
+- **Node.js**: For the React dashboard.
+- **Wireshark (TShark)**: Required for packet capture.
+
+### Step 1: Compile the DPI Engine
+If you make changes to the C++ code, recompile using:
+```bash
+cmd /c "set PATH=C:\msys64\mingw64\bin;%PATH% && g++ -O3 -std=c++17 src/dpi_mt.cpp src/packet_parser.cpp src/sni_extractor.cpp src/pcap_reader.cpp src/types.cpp src/md5.cpp -Iinclude -lws2_32 -o dpi_engine.exe"
+```
+
+### Step 2: Set up Python Environment
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+### Step 3: Start the System
+Run the provided batch file:
+```bash
+.\run_app.bat
+```
+
+---
+
+## 12. Understanding the Output
 
 This DPI engine demonstrates:
 

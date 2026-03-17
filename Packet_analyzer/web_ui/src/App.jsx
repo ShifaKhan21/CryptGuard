@@ -3,6 +3,8 @@ import './index.css';
 
 const API_BASE_URL = 'http://localhost:8081/api';
 
+// Sparkline removed per user request
+
 function App() {
   const [interfaces, setInterfaces] = useState([]);
   const [selectedInterface, setSelectedInterface] = useState('');
@@ -18,7 +20,6 @@ function App() {
 
   const [selectedFlow, setSelectedFlow] = useState(null);
   const [showModal, setShowModal] = useState(false);
-  const [error, setError] = useState(null);
   const pollInterval = useRef(null);
 
   useEffect(() => {
@@ -32,7 +33,9 @@ function App() {
 
   useEffect(() => {
     if (isCapturing) {
-      pollInterval.current = setInterval(fetchStats, 1500); // Faster polling for real-time feel
+      pollInterval.current = setInterval(() => {
+        fetchStats();
+      }, 1000);
     } else {
       if (pollInterval.current) clearInterval(pollInterval.current);
     }
@@ -43,16 +46,19 @@ function App() {
 
   const fetchInterfaces = async () => {
     try {
+      console.log(`[DEBUG] Requesting interfaces from: ${API_BASE_URL}/interfaces`);
       const res = await fetch(`${API_BASE_URL}/interfaces`);
+      if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
       const data = await res.json();
+      console.log(`[DEBUG] Received interfaces:`, data.interfaces);
       setInterfaces(data.interfaces || []);
       if (data.is_capturing) {
         setIsCapturing(true);
         setSelectedInterface(data.selected);
-      } else if (data.interfaces?.length > 0) {
-        setSelectedInterface('1'); 
       }
-    } catch (err) { setError("CryptGuard Core Offline."); }
+    } catch (err) { 
+      console.error("CryptGuard Backend Connectivity Error:", err); 
+    }
   };
 
   const fetchStats = async () => {
@@ -63,6 +69,7 @@ function App() {
     } catch (err) { console.error(err); }
   };
 
+
   const handleStartCapture = async () => {
     if (!selectedInterface) return;
     try {
@@ -72,175 +79,210 @@ function App() {
         body: JSON.stringify({ interface_idx: parseInt(selectedInterface) })
       });
       setIsCapturing(true);
-      fetchStats();
-    } catch (err) { setError("Startup failed."); }
+    } catch (err) { console.error("Startup failed."); }
   };
 
   const handleStopCapture = async () => {
     try {
       await fetch(`${API_BASE_URL}/stop`, { method: 'POST' });
       setIsCapturing(false);
-    } catch (err) { setError("Stopped."); }
+    } catch (err) { console.error("Stopped."); }
   };
 
-  const handleBlockProcess = async (pid, processName) => {
-    if (!window.confirm(`Shut down ${processName}?`)) return;
-    try {
-      await fetch(`${API_BASE_URL}/block`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid })
-      });
-      fetchStats();
-    } catch (err) { alert(err.message); }
-  };
 
   return (
     <div className="app-container">
-      <header>
+      <header className="glass-panel">
         <div className="brand">
           <div className="logo-icon">CG</div>
-          <h1>CryptGuard <span style={{ opacity: 0.5, fontWeight: 400, marginLeft: '4px' }}>| Real-Time Traffic</span></h1>
+          <div style={{display:'flex', flexDirection:'column'}}>
+            <h1 style={{fontSize:'1.2rem'}}>CryptGuard <span style={{color:'var(--text-secondary)', fontWeight:400, fontSize:'1rem'}}>| Real-Time Traffic</span></h1>
+          </div>
         </div>
         
         <div className="header-actions">
-           <div className="status-badge">
-             <div className={`status-dot ${!isCapturing ? 'inactive' : ''}`}></div>
-             {isCapturing ? 'Scanning' : 'Stopped'}
+           <div className={`status-badge ${isCapturing ? 'scanning' : ''}`}>
+             <span className="dot"></span> {isCapturing ? 'Scanning' : 'Standby'}
            </div>
-           <button className="theme-toggle" onClick={toggleTheme} title="Switch Theme">
+           <button className="theme-toggle" onClick={toggleTheme}>
              {theme === 'dark' ? '☀️' : '🌙'}
            </button>
         </div>
       </header>
 
-      <div className="top-controls">
-        <section className="glass-panel control-item">
-          <label>Network</label>
-          <select value={selectedInterface} onChange={(e) => setSelectedInterface(e.target.value)} disabled={isCapturing}>
-            {interfaces.map((iface, idx) => <option key={idx} value={idx + 1}>{iface}</option>)}
-          </select>
-          <button className={isCapturing ? "btn-danger btn-action" : "btn-primary btn-action"} onClick={isCapturing ? handleStopCapture : handleStartCapture}>
-            {isCapturing ? 'Stop' : 'Start'}
-          </button>
-        </section>
+      <main className="dashboard-content">
+        <div className="top-dashboard-grid">
+          <section className="glass-panel adapter-card">
+            <div className="section-header">
+              <span className="label">NETWORK ADAPTER</span>
+              <button className="refresh-btn" onClick={fetchInterfaces} title="Refresh Interfaces">
+                🔄
+              </button>
+            </div>
+            {!isCapturing ? (
+              <select 
+                className="interface-select"
+                value={selectedInterface || ""} 
+                onChange={(e) => setSelectedInterface(e.target.value)}
+                disabled={isCapturing}
+              >
+                <option value="" disabled>Select Interface...</option>
+                {interfaces.map((iface) => (
+                  <option key={iface.name} value={iface.name}>
+                    {iface.description}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="active-interface-display">
+                <div className="interface-name">{selectedInterface} (Active)</div>
+              </div>
+            )}
+            <div className="control-group">
+              <button 
+                className={isCapturing ? "btn-danger" : "btn-primary"}
+                onClick={isCapturing ? handleStopCapture : handleStartCapture}
+              >
+                {isCapturing ? "Terminate Capture" : "Initialize Stream"}
+              </button>
+            </div>
+          </section>
 
-        <div className="glass-panel stat-mini">
-           <div className="lab">Inspected</div>
-           <div className="val">{stats.total_packets.toLocaleString()}</div>
+          <section className="glass-panel stat-card">
+            <label>Packets Inspected</label>
+            <div className="stat-val">{stats.total_packets.toLocaleString()}</div>
+          </section>
+
+          <section className="glass-panel stat-card alert">
+            <label>Security Blocks</label>
+            <div className="stat-val danger">{stats.dropped_packets.toLocaleString()}</div>
+          </section>
         </div>
-        <div className="glass-panel stat-mini">
-           <div className="lab">Blocked</div>
-           <div className="val" style={{ color: 'var(--danger)' }}>{stats.dropped_packets.toLocaleString()}</div>
-        </div>
-      </div>
 
-      {error && <div className="glass-panel" style={{ color: 'var(--danger)', marginBottom: '0.75rem', padding: '0.5rem', fontSize: '0.75rem' }}>⚠️ {error}</div>}
-
-      <section className="table-section">
-        <div className="table-header">
-          <h2>Live Stream</h2>
-          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-            {stats.domains.length} Flows Active
+        <section className="table-section glass-panel">
+          <div className="table-header">
+            <div>
+              <h2 style={{fontSize:'1.4rem', color:'var(--text-primary)'}}>Real-Time Traffic Stream</h2>
+              <p style={{fontSize:'0.75rem', color:'var(--text-secondary)', marginTop:'4px'}}>Deep Packet Inspection (DPI) powered by Random Forest Classifier</p>
+            </div>
+            <div className="flow-count">
+              <span style={{color:'var(--accent-color)', fontWeight:800}}>{stats.domains.length}</span> ACTIVE FLOWS
+            </div>
           </div>
-        </div>
-
-        <div className="table-container">
-          {stats.domains.length === 0 ? (
-             <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-               {isCapturing ? 'Waiting for packets...' : 'Start scanning to see live traffic.'}
-             </div>
-          ) : (
-             <table>
+          
+          <div className="table-container">
+            <table>
               <thead>
                 <tr>
-                  <th>Target</th>
-                  <th>App / Process</th>
-                  <th>Label</th>
-                  <th style={{ width: '50px' }}>Risk</th>
-                  <th>Logic</th>
-                  <th style={{ textAlign: 'right' }}>Hits</th>
-                  <th style={{ textAlign: 'center' }}>Action</th>
+                   <th>Target Destination</th>
+                   <th>Service / Process</th>
+                   <th>Category</th>
+                   <th style={{textAlign:'center'}}>Prod. Score</th>
+                   <th>TLS JA3</th>
+                   <th>AI Verdict</th>
+                   <th>Hits</th>
+                   <th style={{textAlign:'right'}}>Mitigation</th>
                 </tr>
               </thead>
               <tbody>
                 {stats.domains.map((item, index) => (
-                  <tr key={index}>
-                    <td className="domain-cell">
+                  <tr key={item.domain} className={item.prediction === 'Malicious' ? 'blink-danger' : ''}>
+                    <td>
                       <div className="domain-info">
-                        <div className="domain-icon" style={{ opacity: 0.7 }}>{item.domain.charAt(0).toUpperCase()}</div>
+                        <div className={`logo-icon ${item.domain.charAt(0).toUpperCase()}`} style={{background:'rgba(47, 129, 247, 0.1)', color:'var(--accent-color)', border:'1px solid var(--panel-border)'}}>{item.domain.charAt(0).toUpperCase()}</div>
                         <strong>{item.domain}</strong>
                       </div>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600 }}>{item.process?.name || 'System / Network'}</span>
-                        <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>PID: {item.process?.pid || '-'}</span>
+                      <div style={{display:'flex', flexDirection:'column'}}>
+                        <span style={{fontWeight:600}}>{item.process.name}</span>
+                        <span style={{fontSize:'0.65rem', color:'var(--text-muted)'}}>PID: {item.process.pid || '-'}</span>
                       </div>
                     </td>
-                    <td><span className="category-tag">{item.category}</span></td>
-                    <td>
-                      <div className="risk-bar">
-                        <div className="risk-fill" style={{ width: `${item.risk_score}%`, background: item.risk_score > 70 ? 'var(--danger)' : 'var(--warning)' }} />
-                      </div>
+                    <td><span className="category-tag">{item.domain.includes('.') ? 'HTTPS' : 'DNS'}</span></td>
+                    <td style={{textAlign:'center'}}>
+                       <div className="risk-bar-mini">
+                          <div className="risk-fill-mini" style={{width: `${item.risk_score}%`, background: item.risk_score > 70 ? 'var(--danger)' : 'var(--warning)'}}></div>
+                       </div>
                     </td>
+                    <td><span style={{fontSize:'0.65rem', color:'var(--text-muted)'}}>{item.ja3 ? 'SIGNED' : 'N/A'}</span></td>
                     <td>
-                      <span className={`verdict-chip ${item.prediction === 'Malicious' ? 'malicious' : 'benign'}`}>
-                        {item.prediction === 'Malicious' ? 'Unsafe' : 'Safe'}
+                      <span className={`verdict-chip ${item.prediction.toLowerCase()}`}>
+                        {item.prediction}
                       </span>
                     </td>
-                    <td className="hits-cell" style={{ textAlign: 'right' }}>{item.hits}</td>
-                    <td>
-                      <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
-                        <button className="btn-primary btn-action btn-outline" onClick={() => { setSelectedFlow(item); setShowModal(true); }}>Details</button>
-                        {item.prediction === 'Malicious' && item.process?.pid > 0 && (
-                          <button className="btn-danger btn-action" onClick={() => handleBlockProcess(item.process.pid, item.process.name)}>Stop</button>
-                        )}
-                      </div>
+                    <td style={{fontWeight:800}}>{item.hits}</td>
+                    <td style={{textAlign:'right'}}>
+                      <button className="btn-inspect" onClick={() => { setSelectedFlow(item); setShowModal(true); }}>Inspect</button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
-      </section>
+          </div>
+        </section>
+      </main>
 
       {showModal && selectedFlow && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div className="domain-icon" style={{ width: '32px', height: '32px', fontSize: '1rem' }}>{selectedFlow.domain.charAt(0).toUpperCase()}</div>
-                <div>
-                  <h2 style={{ fontSize: '1.2rem' }}>{selectedFlow.domain}</h2>
-                  <span className={`verdict-chip ${selectedFlow.prediction === 'Malicious' ? 'malicious' : 'benign'}`} style={{ marginTop: '2px', display: 'inline-block' }}>
-                    {selectedFlow.prediction === 'Malicious' ? 'High Risk' : 'Verified Safe'}
-                  </span>
-                </div>
+              <div>
+                <h3 style={{fontSize:'1.5rem', fontWeight:800}}>Forensic Inquiry: {selectedFlow.domain}</h3>
+                <span style={{fontSize:'0.7rem', color:'var(--text-muted)', fontWeight:800}}>FLOW UID: {selectedFlow.id || 'N/A'}</span>
               </div>
               <button className="theme-toggle" onClick={() => setShowModal(false)}>&times;</button>
             </div>
             
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.3rem' }}>Traffic Signature (JA3/TLS)</label>
-              <div style={{ padding: '0.5rem', background: 'var(--input-bg)', borderRadius: '4px', fontSize: '0.75rem' }}>
-                <code className="mono">{selectedFlow.ja3 || 'No signature captured'}</code>
-              </div>
+             <div className="glass-panel" style={{display:'flex', flexDirection:'column', justifyContent:'center'}}>
+               <label>Risk Aggregation</label>
+               <div style={{display:'flex', alignItems:'baseline', gap:'0.5rem', marginTop:'0.5rem'}}>
+                  <div style={{fontSize:'3rem', fontWeight:900, color: selectedFlow.risk_score >= 70 ? 'var(--danger)' : 'var(--success)', lineHeight:1}}>
+                    {selectedFlow.risk_score}%
+                  </div>
+                  <div style={{fontSize:'0.8rem', fontWeight:800, color:'var(--text-muted)', textTransform:'uppercase'}}>Composite Score</div>
+               </div>
+             </div>
+
+            <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'1rem', marginBottom:'1.5rem'}}>
+               <div className="glass-panel">
+                  <label>External Threat Intel</label>
+                  <div style={{fontWeight:800, marginTop:'0.5rem'}}>{selectedFlow.threat_intel?.verdict || 'CLEAN'}</div>
+               </div>
+               <div className="glass-panel">
+                  <label>Heuristic Logic</label>
+                  <div style={{fontSize:'0.75rem', fontWeight:700, marginTop:'0.5rem', color:'var(--text-secondary)'}}>{selectedFlow.reason}</div>
+               </div>
             </div>
 
-            <label style={{ display: 'block', marginBottom: '0.3rem' }}>Internal Analysis Factors</label>
-            <div className="features-mini">
-              {Object.entries(selectedFlow.ml_features || {}).map(([key, value]) => (
-                <div key={key} className="feature-box">
-                  <div className="f-key">{key}</div>
-                  <div className="f-val">{typeof value === 'number' ? value.toFixed(3) : value}</div>
-                </div>
-              ))}
+            <div className="glass-panel" style={{background:'rgba(0,0,0,0.3)', border:'1px dashed var(--panel-border)', marginBottom:'1.5rem'}}>
+               <label style={{color:'var(--accent-color)'}}>Forensic Flow Features (Live Capture)</label>
+               <div className="features-mini">
+                 {selectedFlow.ml_features && Object.entries(selectedFlow.ml_features).map(([k, v]) => (
+                   <div key={k} className="feature-box">
+                     <div className="f-key">{k}</div>
+                     <div className="f-val">{typeof v === 'number' ? v.toFixed(4) : v}</div>
+                   </div>
+                 ))}
+                 {/* Explicitly show model labels if they aren't in ml_features */}
+                 {!selectedFlow.ml_features?.Label && (
+                    <div className="feature-box" style={{borderLeft:'2px solid var(--accent-color)'}}>
+                      <div className="f-key">Label</div>
+                      <div className="f-val">{selectedFlow.prediction}</div>
+                    </div>
+                 )}
+                 {!selectedFlow.ml_features?.ClassLabel && (
+                    <div className="feature-box" style={{borderLeft:'2px solid var(--accent-color)'}}>
+                      <div className="f-key">ClassLabel</div>
+                      <div className="f-val">{selectedFlow.category}</div>
+                    </div>
+                 )}
+               </div>
             </div>
-            
-            <div style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-              Verified via Smart Logic & Multi-Layer Behavioral Checks
+
+            <div className="glass-panel" style={{background:'rgba(0,0,0,0.3)', border:'1px dashed var(--panel-border)'}}>
+               <label style={{color:'var(--accent-color)'}}>JA3 TLS Fingerprint</label>
+               <div className="mono" style={{fontSize:'0.85rem', marginTop:'0.5rem', wordBreak:'break-all'}}>{selectedFlow.ja3 || 'PLAINTEXT / NO SIGNATURE'}</div>
             </div>
           </div>
         </div>
