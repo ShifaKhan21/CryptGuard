@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CryptGuard Shield</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="header-brand">
+      <div class="header-logo">🛡️</div>
+      <div>
+        <h1>CryptGuard</h1>
+        <span class="header-sub">Encrypted Traffic Shield</span>
+      </div>
+    </div>
+    <div id="api-status" class="status-pill online">
+      <span class="status-dot"></span>
+      <span id="api-status-text">Active Sentinel</span>
+    </div>
+  </header>
+
+  <!-- Stats Row -->
+  <div class="stats-row">
+    <div class="stat-box">
+      <span class="stat-label">Requests</span>
+      <span class="stat-value" id="stat-requests">0</span>
+    </div>
+    <div class="stat-box">
+      <span class="stat-label">Domains</span>
+      <span class="stat-value" id="stat-domains">0</span>
+    </div>
+    <div class="stat-box">
+      <span class="stat-label">Threats</span>
+      <span class="stat-value stat-danger" id="stat-threats">0</span>
+    </div>
+    <div class="stat-box">
+      <span class="stat-label">Session</span>
+      <span class="stat-value" id="stat-session">0m</span>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tab-bar">
+    <button class="tab active" data-tab="domains">🌐 Domains</button>
+    <button class="tab" data-tab="downloads">📥 Downloads</button>
+    <button class="tab" data-tab="alerts">🔔 Alerts</button>
+  </div>
+
+  <!-- Domains Tab -->
+  <div id="tab-domains" class="tab-content active">
+    <div id="domains-list" class="list-container">
+      <div class="empty-state">Monitoring network traffic...</div>
+    </div>
+  </div>
+
+  <!-- Downloads Tab -->
+  <div id="tab-downloads" class="tab-content">
+    <div id="downloads-list" class="list-container">
+      <div class="empty-state">No downloads scanned yet.</div>
+    </div>
+  </div>
+
+  <!-- Alerts Tab -->
+  <div id="tab-alerts" class="tab-content">
+    <div id="alerts-list" class="list-container">
+      <div class="empty-state">No threats detected. 🛡️</div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <a href="http://localhost:5173" target="_blank" class="open-dashboard-btn">
+      Open Full Dashboard →
+    </a>
+    <div class="privacy-note">⚡ Dynamic Standalone Payload Scanning</div>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
