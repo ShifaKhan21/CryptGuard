@@ -488,15 +488,31 @@ private:
             }
         }
         
-        // DNS
+        // DNS Processing
         if (pkt.tuple.dst_port == 53 || pkt.tuple.src_port == 53) {
             flow.app_type = AppType::DNS;
             if (pkt.payload_length > 12) {
                 const uint8_t* payload = pkt.data.data() + pkt.payload_offset;
-                auto query = DNSExtractor::extractQuery(payload, pkt.payload_length);
-                if (query) {
-                    flow.sni = *query;
-                    flow.classified = true;
+                
+                if (DNSExtractor::isDNSResponse(payload, pkt.payload_length)) {
+                    auto results = DNSExtractor::extractResults(payload, pkt.payload_length);
+                    for (const auto& res : results) {
+                        std::string type_name = (res.type == 1) ? "A" : 
+                                               (res.type == 28) ? "AAAA" :
+                                               (res.type == 5) ? "CNAME" :
+                                               (res.type == 15) ? "MX" : std::to_string(res.type);
+                        
+                        printf("DNS_ANS: %s | TYPE: %s | ANS: %s | TTL: %u\n", 
+                               res.query.empty() ? flow.sni.c_str() : res.query.c_str(),
+                               type_name.c_str(), res.answer.c_str(), res.ttl);
+                    }
+                } else if (DNSExtractor::isDNSQuery(payload, pkt.payload_length)) {
+                    auto query = DNSExtractor::extractQuery(payload, pkt.payload_length);
+                    if (query) {
+                        flow.sni = *query;
+                        printf("DNS_QRY: %s\n", query->c_str());
+                        flow.classified = true;
+                    }
                 }
             }
             return;

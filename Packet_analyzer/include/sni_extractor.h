@@ -101,7 +101,14 @@ public:
     static bool isHTTPRequest(const uint8_t* payload, size_t length);
 };
 
-// ============================================================================
+// DNS Result structure
+struct DNSResult {
+    std::string query;
+    uint16_t type;
+    uint32_t ttl;
+    std::string answer;
+};
+
 // DNS Query Extractor (to correlate domain names)
 // ============================================================================
 class DNSExtractor {
@@ -109,8 +116,14 @@ public:
     // Extract queried domain from DNS request
     static std::optional<std::string> extractQuery(const uint8_t* payload, size_t length);
     
+    // Extract full record info from DNS response
+    static std::vector<DNSResult> extractResults(const uint8_t* payload, size_t length);
+
     // Check if this is a DNS query (not response)
     static bool isDNSQuery(const uint8_t* payload, size_t length);
+    
+    // Check if this is a DNS response
+    static bool isDNSResponse(const uint8_t* payload, size_t length);
 };
 
 } // namespace DPI

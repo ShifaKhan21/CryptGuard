@@ -14,6 +14,33 @@ from socketserver import ThreadingMixIn
 import psutil
 import signal
 import re
+from datetime import datetime
+import math
+from collections import Counter
+
+# ── C2 Beacon Detection Module ─────────────────────────────────────────────
+try:
+    from beacon_detector import analyze_beacon, get_beacon_history, get_db_stats, clear_old_records
+    BEACON_DETECTION_ENABLED = True
+    print("[C2] Beacon detection module loaded.")
+except ImportError as e:
+    BEACON_DETECTION_ENABLED = False
+    print(f"[C2] Beacon detection NOT available: {e}")
+    # Stubs so the rest of the code doesn't crash
+    def analyze_beacon(*a, **kw): return {}
+    def get_beacon_history(limit=50): return []
+    def get_db_stats(): return {}
+    def clear_old_records(**kw): return 0
+
+# ── Threat Intel Module ──────────────────────────────────────────────────
+try:
+    from threat_intel import intel_engine
+    INTEL_ENABLED = True
+    print("[Intel] Threat intelligence module loaded.")
+except ImportError as e:
+    INTEL_ENABLED = False
+    print(f"[Intel] Threat intel NOT available: {e}")
+
 
 # Double Buffering for Parallel Capture
 TEMP_PCAP_A = "temp_capture_a.pcap"
@@ -44,7 +71,13 @@ state_lock = threading.Lock()
 # In-memory DNS cache
 dns_cache = {}
 dns_queue = []
+dns_history = []
 dns_lock = threading.Lock()
+
+def calculate_entropy(text):
+    if not text: return 0
+    probs = [v/len(text) for v in Counter(text).values()]
+    return -sum(p * math.log2(p) for p in probs)
 
 class ProcessSentinel:
     @staticmethod
@@ -229,7 +262,7 @@ def parse_dpi_output(dpi_output):
                         if src_port in port_map:
                             domains[dom]["process"] = port_map[src_port]
                     
-                    # AI Inference
+                    # AI Inference (unchanged)
                     if rf_model and xgb_model and "ml_features" in domains[dom]:
                         try:
                             # Map features to the 57-feature vector
@@ -246,7 +279,109 @@ def parse_dpi_output(dpi_output):
                                 domains[dom]["beacon_detected"] = bool(float(prob) > 0.5)
                                 if float(prob) > 0.5: domains[dom].update({"category": "SUSPICIOUS"})
                         except: pass
+
+                    # ── C2 Beacon Analysis (additive — does NOT modify ML verdict) ──
+                    if BEACON_DETECTION_ENABLED:
+                        try:
+                            process_info = domains[dom].get("process", {})
+                            process_name = process_info.get("name", "unknown") if process_info else "unknown"
+                            dest_ip = dom  # use domain/IP as destination identifier
+                            pkt_size = int(stats_dict.get("Avg Packet Size", 0))
+                            beacon_result = analyze_beacon(
+                                process=process_name,
+                                destination_ip=dest_ip,
+                                packet_size=pkt_size,
+                                timestamp=datetime.now(),
+                                port=src_port
+                            )
+                            # Attach beacon analysis to domain entry
+                            domains[dom]["beacon_analysis"] = {
+                                "beacon_score": beacon_result.get("beacon_score", 0),
+                                "verdict": beacon_result.get("verdict", "NORMAL"),
+                                "signals_triggered": beacon_result.get("signals_triggered", []),
+                                "should_block": beacon_result.get("should_block", False)
+                            }
+                            # If beacon says BLOCK → escalate prediction
+                            if beacon_result.get("should_block") and not domains[dom].get("beacon_detected"):
+                                domains[dom].update({
+                                    "beacon_detected": True,
+                                    "prediction": "Malicious",
+                                    "risk_score": max(domains[dom].get("risk_score", 0), 85.0),
+                                    "category": "C2 BEACON DETECTED"
+                                })
+                            # ── Threat Intel Analysis (AbuseIPDB) ───────────────────────────
+                            if INTEL_ENABLED:
+                                # Simple check: is dom an IP?
+                                is_ip = re.match(r"^(\d{1,3}\.){3}\d{1,3}$", dest_ip)
+                                if is_ip:
+                                    rep_score, rep_data = intel_engine.get_ip_reputation(dest_ip)
+                                    domains[dom]["reputation_score"] = rep_score
+                                    # If reputation is very bad (>50) → escalate risk
+                                    if rep_score > 50:
+                                        domains[dom].update({
+                                            "prediction": "Malicious",
+                                            "risk_score": max(domains[dom].get("risk_score", 0), float(rep_score)),
+                                            "category": f"SUSPICIOUS IP ({rep_score}%)"
+                                        })
+
+                        except Exception as _be:
+                            log_debug(f"BeaconDetector/Intel error: {_be}")
                 except: pass
+
+            # ── DNS Intelligence Parsing ────────────────────────────────────
+            elif "DNS_QRY:" in line_clean or "DNS_ANS:" in line_clean:
+                try:
+                    with dns_lock:
+                        if "DNS_QRY:" in line_clean:
+                            query = line_clean.split("DNS_QRY:")[1].strip()
+                            event = {
+                                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                "type": "QUERY",
+                                "domain": query,
+                                "answer": "Pending...",
+                                "ttl": "-",
+                                "flags": []
+                            }
+                            # Heuristics
+                            if len(query) > 30: event["flags"].append("LONG_DOMAIN")
+                            if calculate_entropy(query) > 3.8: event["flags"].append("LOW_READABILITY")
+                            
+                            dns_history.insert(0, event)
+                        
+                        elif "DNS_ANS:" in line_clean:
+                            # DNS_ANS: domain.com | TYPE: A | ANS: 1.2.3.4 | TTL: 3600
+                            parts = line_clean.split("DNS_ANS:")[1].split("|")
+                            dom = parts[0].strip()
+                            ans_type = parts[1].split(":")[1].strip()
+                            ans_val = parts[2].split(":")[1].strip()
+                            ttl_val = parts[3].split(":")[1].strip()
+                            
+                            # Update existing query or add new response event
+                            found = False
+                            for e in dns_history[:20]: # Check recent ones
+                                if e["domain"] == dom and e["answer"] == "Pending...":
+                                    e["answer"] = f"[{ans_type}] {ans_val}"
+                                    e["ttl"] = ttl_val
+                                    found = True
+                                    break
+                            
+                            if not found:
+                                dns_history.insert(0, {
+                                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                    "type": "RESPONSE",
+                                    "domain": dom,
+                                    "answer": f"[{ans_type}] {ans_val}",
+                                    "ttl": ttl_val,
+                                    "flags": []
+                                })
+                        
+                        # Keep history manageable
+                        if len(dns_history) > 100: dns_history.pop()
+                except Exception as e:
+                    log_debug(f"DNS Parse Error: {e}")
+
+                except: pass
+
 
         # State updates and decay
         engine_state["last_update"] = now
@@ -348,6 +483,7 @@ class APIHandler(BaseHTTPRequestHandler):
                         { "domain": k, "category": v["category"], "hits": v["count"], "last_seen": v.get("last_seen", 0),
                           "ml_features": v.get("ml_features", {}), "risk_score": v.get("risk_score", 0),
                           "prediction": v.get("prediction", "Benign"), "beacon_detected": v.get("beacon_detected", False),
+                          "beacon_analysis": v.get("beacon_analysis", {}),
                           "process": v.get("process", {"pid": 0, "name": "Unknown"}) }
                         for k, v in sorted(engine_state["domains"].items(), key=lambda x: (x[1].get("last_seen", 0), x[1]["count"]), reverse=True)
                     ][:50]
@@ -356,6 +492,39 @@ class APIHandler(BaseHTTPRequestHandler):
                             "last_update": engine_state["last_update"] }
                 self._set_headers()
                 self.wfile.write(json.dumps(res).encode())
+            # ── New C2 Beacon Endpoints ──────────────────────────────────────────
+            elif self.path == '/api/beacon-history':
+                try:
+                    history = get_beacon_history(limit=50)
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"alerts": history, "count": len(history)}).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/intel-history':
+                try:
+                    if INTEL_ENABLED:
+                        history = intel_engine.get_history(limit=50)
+                        self._set_headers()
+                        self.wfile.write(json.dumps({"history": history, "count": len(history)}).encode())
+                    else:
+                        self._send_error(400, "Threat Intel module not enabled")
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/dns-history':
+                try:
+                    with dns_lock:
+                        history = list(dns_history)
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"history": history, "count": len(history)}).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/threat-cache':
+                try:
+                    stats = get_db_stats()
+                    self._set_headers()
+                    self.wfile.write(json.dumps(stats).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
             else: self._send_error(404, "Not Found")
         except Exception as e:
             self._send_error(500, str(e))
@@ -400,6 +569,14 @@ class APIHandler(BaseHTTPRequestHandler):
                             self._send_error(404, "Process no longer exists.")
                     else:
                         self._send_error(400, "Missing PID")
+                except Exception as e:
+                    self._send_error(500, str(e))
+            # ── New C2 Beacon Endpoints (POST) ──────────────────────────────────
+            elif self.path == '/api/clear-cache':
+                try:
+                    deleted = clear_old_records(older_than_hours=0)  # clear ALL
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"status": "success", "deleted": deleted}).encode())
                 except Exception as e:
                     self._send_error(500, str(e))
             else:

@@ -308,10 +308,92 @@ bool DNSExtractor::isDNSQuery(const uint8_t* payload, size_t length) {
     return true;
 }
 
-std::optional<std::string> DNSExtractor::extractQuery(const uint8_t* payload, size_t length) {
-    if (!isDNSQuery(payload, length)) {
-        return std::nullopt;
+bool DNSExtractor::isDNSResponse(const uint8_t* payload, size_t length) {
+    if (length < 12) return false;
+    uint8_t flags = payload[2];
+    return (flags & 0x80) != 0; // QR bit 1 = Response
+}
+
+std::vector<DNSResult> DNSExtractor::extractResults(const uint8_t* payload, size_t length) {
+    if (length < 12) return {};
+    
+    uint16_t qdcount = (static_cast<uint16_t>(payload[4]) << 8) | payload[5];
+    uint16_t ancount = (static_cast<uint16_t>(payload[6]) << 8) | payload[7];
+    
+    if (ancount == 0) return {};
+    
+    size_t offset = 12;
+    
+    // 1. Skip Questions
+    for (int i = 0; i < qdcount; ++i) {
+        while (offset < length) {
+            uint8_t len = payload[offset];
+            if (len == 0) { offset++; break; }
+            if (len >= 0xC0) { offset += 2; break; } // Pointer
+            offset += 1 + len;
+        }
+        offset += 4; // Type (2) + Class (2)
     }
+    
+    std::vector<DNSResult> results;
+    
+    // 2. Parse Answers
+    for (int i = 0; i < ancount && offset + 10 <= length; ++i) {
+        DNSResult res;
+        
+        // Name (can be compressed)
+        size_t name_offset = offset;
+        bool compressed = false;
+        while (name_offset < length) {
+            uint8_t len = payload[name_offset];
+            if (len == 0) { if(!compressed) offset = name_offset + 1; break; }
+            if (len >= 0xC0) {
+                if(!compressed) offset = name_offset + 2;
+                compressed = true;
+                break;
+            }
+            name_offset += 1 + len;
+        }
+        
+        if (offset > length) break;
+        
+        uint16_t type = (static_cast<uint16_t>(payload[offset]) << 8) | payload[offset+1];
+        uint32_t ttl = (static_cast<uint32_t>(payload[offset+2]) << 24) | 
+                       (static_cast<uint32_t>(payload[offset+3]) << 16) |
+                       (static_cast<uint32_t>(payload[offset+4]) << 8) | 
+                       payload[offset+5];
+        uint16_t rdlen = (static_cast<uint16_t>(payload[offset+8]) << 8) | payload[offset+9];
+        
+        res.type = type;
+        res.ttl = ttl;
+        offset += 10;
+        
+        if (offset + rdlen > length) break;
+        
+        // Extract Answer Data
+        if (type == 1 && rdlen == 4) { // A Record (IPv4)
+            std::ostringstream ss;
+            ss << (int)payload[offset] << "." << (int)payload[offset+1] << "."
+               << (int)payload[offset+2] << "." << (int)payload[offset+3];
+            res.answer = ss.str();
+        } else if (type == 5 || type == 2 || type == 12) { // CNAME, NS, PTR (Domain names)
+            // For simplicity, we just mark it as a domain answer
+            res.answer = "[Domain Name]"; 
+        } else if (type == 28 && rdlen == 16) { // AAAA Record (IPv6)
+            res.answer = "[IPv6 Address]";
+        } else {
+            res.answer = "Data size: " + std::to_string(rdlen);
+        }
+        
+        results.push_back(res);
+        offset += rdlen;
+    }
+    
+    return results;
+}
+
+std::optional<std::string> DNSExtractor::extractQuery(const uint8_t* payload, size_t length) {
+    if (length < 12) return std::nullopt;
     
     // DNS query starts at byte 12
     size_t offset = 12;
@@ -325,8 +407,9 @@ std::optional<std::string> DNSExtractor::extractQuery(const uint8_t* payload, si
             break;
         }
         
-        if (label_length > 63) {
-            // Compression pointer or invalid
+        if (label_length >= 0xC0) {
+            // Compression pointer - we don't fully resolve these in the simple extractor
+            // But we can skip it
             break;
         }
         
