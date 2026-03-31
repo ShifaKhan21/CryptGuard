@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "CryptGuard — Encrypted Traffic Shield",
+  "version": "1.0.0",
+  "description": "Privacy-preserving threat detection. Monitors network metadata and scans downloads without reading your data.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "webRequest",
+    "downloads",
+    "notifications",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://localhost:8081/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    },
+    "default_title": "CryptGuard Shield"
+  }
+}

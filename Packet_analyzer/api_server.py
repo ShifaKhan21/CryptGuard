@@ -525,6 +525,28 @@ class APIHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps(stats).encode())
                 except Exception as e:
                     self._send_error(500, str(e))
+            elif self.path == '/api/extension-stats':
+                try:
+                    with state_lock:
+                        sorted_domains = [
+                            {"domain": k, "risk_score": v.get("risk_score", 0),
+                             "prediction": v.get("prediction", "Benign"),
+                             "hits": v["count"], "category": v["category"]}
+                            for k, v in sorted(
+                                engine_state["domains"].items(),
+                                key=lambda x: x[1].get("risk_score", 0), reverse=True
+                            )
+                        ][:20]
+                        res = {
+                            "domains": sorted_domains,
+                            "total_packets": engine_state["total_packets"],
+                            "total_threats": sum(1 for d in engine_state["domains"].values() if d.get("prediction") == "Malicious"),
+                            "api_online": True,
+                        }
+                    self._set_headers()
+                    self.wfile.write(json.dumps(res).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
             else: self._send_error(404, "Not Found")
         except Exception as e:
             self._send_error(500, str(e))
@@ -577,6 +599,66 @@ class APIHandler(BaseHTTPRequestHandler):
                     deleted = clear_old_records(older_than_hours=0)  # clear ALL
                     self._set_headers()
                     self.wfile.write(json.dumps({"status": "success", "deleted": deleted}).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/extension-report':
+                try:
+                    data = json.loads(body.decode())
+                    domain = data.get('domain', '')
+                    risk = data.get('risk', 0)
+                    signals = data.get('signals', [])
+                    log_debug(f"[Extension] Report: {domain} risk={risk} signals={signals}")
+                    # Feed into beacon detector if available
+                    if BEACON_DETECTION_ENABLED and domain:
+                        analyze_beacon(
+                            process_name="chrome.exe",
+                            destination_ip=domain,
+                            connection_count=data.get('count', 1),
+                            timestamps=data.get('timestamps', []),
+                            sizes=data.get('sizes', []),
+                        )
+                        
+                    # Inject extension telemetry into state
+                    with state_lock:
+                        if domain not in engine_state["domains"]:
+                            engine_state["domains"][domain] = {
+                                "count": 0, "risk_score": 0, "prediction": "Benign",
+                                "category": "Browser Context", "last_seen": 0, "ml_features": {}
+                            }
+                        dstate = engine_state["domains"][domain]
+                        dstate["count"] += 1
+                        dstate["risk_score"] = max(dstate.get("risk_score", 0), risk)
+                        if risk >= 60: dstate["prediction"] = "Malicious"
+                        elif risk >= 40: dstate["prediction"] = "Suspicious"
+                        dstate["last_seen"] = time.time()
+                        
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"status": "received"}).encode())
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/scan-download':
+                try:
+                    data = json.loads(body.decode())
+                    url = data.get('url', '')
+                    filename = data.get('filename', '')
+                    risk = 0
+                    signals = []
+                    # Check domain reputation via threat intel
+                    if INTEL_ENABLED:
+                        try:
+                            from urllib.parse import urlparse
+                            domain = urlparse(url).hostname
+                            if domain and re.match(r"^(\d{1,3}\.){3}\d{1,3}$", domain):
+                                rep_score, _ = intel_engine.get_ip_reputation(domain)
+                                if rep_score > 30:
+                                    risk += int(rep_score) // 2
+                                    signals.append(f"IP_REPUTATION_{rep_score}")
+                        except: pass
+                    self._set_headers()
+                    self.wfile.write(json.dumps({
+                        "risk_score": min(risk, 50),
+                        "signals": signals,
+                    }).encode())
                 except Exception as e:
                     self._send_error(500, str(e))
             else:
