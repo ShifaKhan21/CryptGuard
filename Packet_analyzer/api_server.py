@@ -15,6 +15,8 @@ import psutil
 import signal
 import re
 from datetime import datetime
+import math
+from collections import Counter
 
 # ── C2 Beacon Detection Module ─────────────────────────────────────────────
 try:
@@ -69,7 +71,13 @@ state_lock = threading.Lock()
 # In-memory DNS cache
 dns_cache = {}
 dns_queue = []
+dns_history = []
 dns_lock = threading.Lock()
+
+def calculate_entropy(text):
+    if not text: return 0
+    probs = [v/len(text) for v in Counter(text).values()]
+    return -sum(p * math.log2(p) for p in probs)
 
 class ProcessSentinel:
     @staticmethod
@@ -320,6 +328,60 @@ def parse_dpi_output(dpi_output):
                             log_debug(f"BeaconDetector/Intel error: {_be}")
                 except: pass
 
+            # ── DNS Intelligence Parsing ────────────────────────────────────
+            elif "DNS_QRY:" in line_clean or "DNS_ANS:" in line_clean:
+                try:
+                    with dns_lock:
+                        if "DNS_QRY:" in line_clean:
+                            query = line_clean.split("DNS_QRY:")[1].strip()
+                            event = {
+                                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                "type": "QUERY",
+                                "domain": query,
+                                "answer": "Pending...",
+                                "ttl": "-",
+                                "flags": []
+                            }
+                            # Heuristics
+                            if len(query) > 30: event["flags"].append("LONG_DOMAIN")
+                            if calculate_entropy(query) > 3.8: event["flags"].append("LOW_READABILITY")
+                            
+                            dns_history.insert(0, event)
+                        
+                        elif "DNS_ANS:" in line_clean:
+                            # DNS_ANS: domain.com | TYPE: A | ANS: 1.2.3.4 | TTL: 3600
+                            parts = line_clean.split("DNS_ANS:")[1].split("|")
+                            dom = parts[0].strip()
+                            ans_type = parts[1].split(":")[1].strip()
+                            ans_val = parts[2].split(":")[1].strip()
+                            ttl_val = parts[3].split(":")[1].strip()
+                            
+                            # Update existing query or add new response event
+                            found = False
+                            for e in dns_history[:20]: # Check recent ones
+                                if e["domain"] == dom and e["answer"] == "Pending...":
+                                    e["answer"] = f"[{ans_type}] {ans_val}"
+                                    e["ttl"] = ttl_val
+                                    found = True
+                                    break
+                            
+                            if not found:
+                                dns_history.insert(0, {
+                                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                    "type": "RESPONSE",
+                                    "domain": dom,
+                                    "answer": f"[{ans_type}] {ans_val}",
+                                    "ttl": ttl_val,
+                                    "flags": []
+                                })
+                        
+                        # Keep history manageable
+                        if len(dns_history) > 100: dns_history.pop()
+                except Exception as e:
+                    log_debug(f"DNS Parse Error: {e}")
+
+                except: pass
+
 
         # State updates and decay
         engine_state["last_update"] = now
@@ -446,6 +508,14 @@ class APIHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"history": history, "count": len(history)}).encode())
                     else:
                         self._send_error(400, "Threat Intel module not enabled")
+                except Exception as e:
+                    self._send_error(500, str(e))
+            elif self.path == '/api/dns-history':
+                try:
+                    with dns_lock:
+                        history = list(dns_history)
+                    self._set_headers()
+                    self.wfile.write(json.dumps({"history": history, "count": len(history)}).encode())
                 except Exception as e:
                     self._send_error(500, str(e))
             elif self.path == '/api/threat-cache':
